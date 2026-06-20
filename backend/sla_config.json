@@ -1,0 +1,50 @@
+[
+  {
+    "category": "Safety",
+    "defaultSLA": 12,
+    "escalationSLA": 24,
+    "emergencySLA": 6
+  },
+  {
+    "category": "Water",
+    "defaultSLA": 24,
+    "escalationSLA": 48,
+    "emergencySLA": 12
+  },
+  {
+    "category": "Garbage",
+    "defaultSLA": 48,
+    "escalationSLA": 72,
+    "emergencySLA": 24
+  },
+  {
+    "category": "Sanitation",
+    "defaultSLA": 48,
+    "escalationSLA": 72,
+    "emergencySLA": 24
+  },
+  {
+    "category": "Streetlight",
+    "defaultSLA": 72,
+    "escalationSLA": 96,
+    "emergencySLA": 36
+  },
+  {
+    "category": "Pothole",
+    "defaultSLA": 96,
+    "escalationSLA": 120,
+    "emergencySLA": 48
+  },
+  {
+    "category": "Construction",
+    "defaultSLA": 120,
+    "escalationSLA": 168,
+    "emergencySLA": null
+  },
+  {
+    "category": "Other",
+    "defaultSLA": 72,
+    "escalationSLA": 96,
+    "emergencySLA": 36
+  }
+]

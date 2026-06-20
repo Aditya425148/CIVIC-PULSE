@@ -2,20 +2,22 @@ import json
 from fastapi import APIRouter, Query as QParam
 from appwrite.query import Query
 from appwrite_client import databases, DATABASE_ID, COLLECTION_ID
+from config import REPUTATION_POINTS, REPUTATION_DEFAULT, LEADERBOARD_LIMIT
 
 router = APIRouter(prefix="/api/leaderboard", tags=["leaderboard"])
 
-POINTS = {"Resolved": 50, "Verified": 20}
-
 
 def _score(status: str) -> int:
-    return POINTS.get(status, 10)
+    return REPUTATION_POINTS.get(status, REPUTATION_DEFAULT)
 
 
 @router.get("")
 async def leaderboard(tab: str = QParam(default="National")):
     try:
-        resp = databases.list_documents(DATABASE_ID, COLLECTION_ID, queries=[Query.limit(500)])
+        resp = databases.list_documents(
+            DATABASE_ID, COLLECTION_ID,
+            queries=[Query.limit(LEADERBOARD_LIMIT)],
+        )
         docs = resp["documents"]
     except Exception:
         return []
@@ -24,8 +26,7 @@ async def leaderboard(tab: str = QParam(default="National")):
     for doc in docs:
         status = doc.get("status", "")
         district = doc.get("district") or doc.get("ward") or "General"
-        
-        # 1. Handle original reporter points
+
         reporter_id = doc.get("reporterId") or doc.get("userId")
         if reporter_id:
             if reporter_id not in user_stats:
@@ -41,8 +42,7 @@ async def leaderboard(tab: str = QParam(default="National")):
             if status == "Resolved":
                 user_stats[reporter_id]["resolved"] += 1
 
-        # 2. Handle verification points (+20 per verify)
-        # Since verifiedBy attribute is missing in the database, we parse it from the timeline
+        # Verification points parsed from timeline
         timeline_raw = doc.get("timeline")
         if timeline_raw:
             try:
@@ -61,8 +61,8 @@ async def leaderboard(tab: str = QParam(default="National")):
                                     "resolved": 0,
                                     "district": district,
                                 }
-                            user_stats[v_uid]["impact"] += 20
-            except:
+                            user_stats[v_uid]["impact"] += REPUTATION_POINTS.get("Verified", 20)
+            except Exception:
                 pass
 
     return sorted(user_stats.values(), key=lambda x: x["impact"], reverse=True)[:10]
@@ -71,10 +71,17 @@ async def leaderboard(tab: str = QParam(default="National")):
 @router.get("/summary")
 async def leaderboard_summary():
     try:
-        resp = databases.list_documents(DATABASE_ID, COLLECTION_ID, queries=[Query.limit(500)])
+        resp = databases.list_documents(
+            DATABASE_ID, COLLECTION_ID,
+            queries=[Query.limit(LEADERBOARD_LIMIT)],
+        )
         docs = resp["documents"]
         resolved = sum(1 for d in docs if d.get("status") == "Resolved")
-        active_citizens = len({d.get("reporterId") or d.get("userId") for d in docs if d.get("reporterId") or d.get("userId")})
+        active_citizens = len({
+            d.get("reporterId") or d.get("userId")
+            for d in docs
+            if d.get("reporterId") or d.get("userId")
+        })
         return {"totalResolved": resolved, "activeCitizens": active_citizens}
     except Exception:
         return {"totalResolved": 0, "activeCitizens": 0}

@@ -1,78 +1,66 @@
 import json
 import math
-from datetime import datetime, timedelta, UTC
+from datetime import datetime, UTC
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query as FastAPIQuery
 from pydantic import BaseModel
 from appwrite.query import Query
-from appwrite_client import databases, DATABASE_ID, COLLECTION_ID
+from appwrite_client import databases, users as aw_users, DATABASE_ID, COLLECTION_ID
 from geopy.geocoders import Nominatim
+from config import (
+    DELHI_ZONE_CONFIG, ZONE_LAT_LNG_RULES, DEFAULT_ZONE,
+    STATE_ALIASES, SLA_HOURS, CATEGORY_PRIORITY,
+    PRIORITY_BASE, PRIORITY_VERIFY_PER_VOTE, PRIORITY_VERIFY_CAP,
+    COMPLAINT_LIST_LIMIT, DEFAULT_SEARCH_RADIUS_KM,
+    MANAGER_ROLE_KEY, MANAGER_ROLE_VALUE, MANAGER_ZONE_KEY, MANAGER_STATE_KEY,
+)
 
 router = APIRouter(prefix="/api/complaints", tags=["complaints"])
 
 # Geocoder for reverse-geocoding state from coordinates
 geolocator = Nominatim(user_agent="smart_crm_ps_crm")
 
-# ── Delhi Zone Config & Manager Config ─────────────────────────────
 
-DELHI_ZONE_CONFIG = [
-    {
-        "id": "south",
-        "name": "South Delhi",
-        "keywords": ["south delhi", "saket", "gk", "greater kailash", "hauz khas",
-                     "vasant vihar", "malviya nagar", "defence colony", "mehrauli",
-                     "chhatarpur", "qutub"],
-    },
-    {
-        "id": "central_new",
-        "name": "Central & New Delhi",
-        "keywords": ["central delhi", "new delhi", "connaught place", "cp",
-                     "karol bagh", "daryaganj", "civil lines", "paharganj",
-                     "india gate", "rajpath", "chandni chowk"],
-    },
-    {
-        "id": "east_shahdara",
-        "name": "East Delhi & Shahdara",
-        "keywords": ["east delhi", "shahdara", "laxmi nagar", "preet vihar",
-                     "mayur vihar", "gandhi nagar", "anand vihar", "vivek vihar",
-                     "dilshad garden", "seelampur"],
-    },
-    {
-        "id": "west",
-        "name": "West Delhi",
-        "keywords": ["west delhi", "rajouri garden", "punjabi bagh", "janakpuri",
-                     "patel nagar", "tilak nagar", "vikaspuri", "dwarka",
-                     "uttam nagar", "najafgarh"],
-    },
-    {
-        "id": "north_nw",
-        "name": "North & North-West Delhi",
-        "keywords": ["north delhi", "north west delhi", "north-west delhi",
-                     "rohini", "model town", "narela", "delhi university",
-                     "du campus", "burari", "pitampura", "azadpur", "timarpur",
-                     "shalimar bagh", "ashok vihar"],
-    },
-]
+# ── Manager fetching (from Appwrite Users) ─────────────────────────────────
+_manager_cache: list[dict] | None = None
+_manager_cache_ts: float = 0
+_MANAGER_CACHE_TTL = 300  # 5 min
 
-# 10 managers — 2 per zone (zone-based IDs)
-MOCK_MANAGERS = [
-    # South Delhi
-    {"id": "MGR-DEL-S01", "name": "Sanjay Sharma",  "state": "Delhi", "zone": "south"},
-    {"id": "MGR-DEL-S02", "name": "Kavita Mehra",   "state": "Delhi", "zone": "south"},
-    # Central & New Delhi
-    {"id": "MGR-DEL-C01", "name": "Meena Kumari",   "state": "Delhi", "zone": "central_new"},
-    {"id": "MGR-DEL-C02", "name": "Vikram Khanna",  "state": "Delhi", "zone": "central_new"},
-    # East Delhi & Shahdara
-    {"id": "MGR-DEL-E01", "name": "Rajesh Tyagi",   "state": "Delhi", "zone": "east_shahdara"},
-    {"id": "MGR-DEL-E02", "name": "Pooja Verma",    "state": "Delhi", "zone": "east_shahdara"},
-    # West Delhi
-    {"id": "MGR-DEL-W01", "name": "Anita Singh",    "state": "Delhi", "zone": "west"},
-    {"id": "MGR-DEL-W02", "name": "Rakesh Gupta",   "state": "Delhi", "zone": "west"},
-    # North & North-West Delhi
-    {"id": "MGR-DEL-N01", "name": "Amit Goel",      "state": "Delhi", "zone": "north_nw"},
-    {"id": "MGR-DEL-N02", "name": "Sunita Devi",    "state": "Delhi", "zone": "north_nw"},
-]
+def _fetch_managers_from_appwrite() -> list[dict]:
+    """Fetches all users whose prefs.role == 'manager' from Appwrite."""
+    global _manager_cache, _manager_cache_ts
+    import time
+    now = time.time()
+    if _manager_cache is not None and (now - _manager_cache_ts) < _MANAGER_CACHE_TTL:
+        return _manager_cache
 
+    try:
+        result = aw_users.list(queries=[Query.limit(100)])
+        managers = []
+        for u in result.get("users", []):
+            prefs = u.get("prefs", {})
+            if prefs.get(MANAGER_ROLE_KEY) == MANAGER_ROLE_VALUE:
+                managers.append({
+                    "id": u["$id"],
+                    "name": u.get("name", "Manager"),
+                    "email": u.get("email", ""),
+                    "state": prefs.get(MANAGER_STATE_KEY, "Delhi"),
+                    "zone": prefs.get(MANAGER_ZONE_KEY, DEFAULT_ZONE),
+                })
+        _manager_cache = managers
+        _manager_cache_ts = now
+        return managers
+    except Exception as e:
+        print(f"[managers] Appwrite fetch failed: {e}")
+        return _manager_cache or []
+
+
+def invalidate_manager_cache():
+    global _manager_cache
+    _manager_cache = None
+
+
+# ── Zone detection ──────────────────────────────────────────────────────────
 
 def detect_zone_from_complaint(address: str = "", coordinates: dict = None) -> str:
     """Detects which Delhi zone a complaint belongs to based on address keywords or GPS coords."""
@@ -87,42 +75,41 @@ def detect_zone_from_complaint(address: str = "", coordinates: dict = None) -> s
         lng = coordinates.get("lng") or coordinates.get("longitude")
         if lat is not None and lng is not None:
             lat, lng = float(lat), float(lng)
-            # 2D bounding boxes for each zone (order matters — check specific zones before default)
-            # North & NW: upper part of Delhi
-            if lat >= 28.70:
-                return "north_nw"
-            # South: lower part of Delhi
-            if lat <= 28.56:
-                return "south"
-            # East & Shahdara: east side, but only beyond Yamuna river (~77.28 lng)
-            if lng >= 77.28:
-                return "east_shahdara"
-            # West: west side of Delhi
-            if lng <= 77.08:
-                return "west"
-            # Central & New Delhi: everything else in the middle band
-            # (lat 28.56–28.72, lng 77.08–77.28)
+            for rule in ZONE_LAT_LNG_RULES:
+                if rule["lat_min"] is not None and lat < rule["lat_min"]:
+                    continue
+                if rule["lat_max"] is not None and lat > rule["lat_max"]:
+                    continue
+                if rule["lng_min"] is not None and lng < rule["lng_min"]:
+                    continue
+                if rule["lng_max"] is not None and lng > rule["lng_max"]:
+                    continue
+                return rule["zone"]
 
-    return "central_new"  # default zone
+    return DEFAULT_ZONE
 
 
-def assign_manager_to_complaint(complaint_state: str, address: str = "", coordinates: dict = None) -> dict:
+# ── Manager assignment ──────────────────────────────────────────────────────
+
+def assign_manager_to_complaint(
+    complaint_state: str, address: str = "", coordinates: dict = None
+) -> dict:
     """Assigns the least-loaded manager from the correct zone for the given complaint."""
-    # 1. Get managers for this state
-    state_managers = [m for m in MOCK_MANAGERS if m["state"].lower() == complaint_state.lower()]
+    all_managers = _fetch_managers_from_appwrite()
+    state_managers = [
+        m for m in all_managers
+        if m["state"].lower() == complaint_state.lower()
+    ]
 
     if not state_managers:
         return {"id": "SYSTEM", "name": "SystemAdmin"}
 
-    # 2. Detect zone and filter managers by zone
     zone_id = detect_zone_from_complaint(address, coordinates)
     zone_managers = [m for m in state_managers if m.get("zone") == zone_id]
-
-    # Fallback to all state managers if no zone match
     if not zone_managers:
         zone_managers = state_managers
 
-    # 3. Count active (non-resolved) complaints per manager
+    # Pick the manager with the fewest active (non-resolved) complaints
     manager_workloads = []
     for mgr in zone_managers:
         try:
@@ -132,7 +119,7 @@ def assign_manager_to_complaint(complaint_state: str, address: str = "", coordin
                     Query.equal("assignedManagerId", mgr["id"]),
                     Query.not_equal("status", "Resolved"),
                     Query.not_equal("status", "Closed"),
-                    Query.limit(1),  # we only need the total count
+                    Query.limit(1),
                 ]
             )
             count = resp.get("total", 0)
@@ -140,22 +127,13 @@ def assign_manager_to_complaint(complaint_state: str, address: str = "", coordin
             count = 0
         manager_workloads.append((mgr, count))
 
-    # 4. Pick the manager with the fewest active complaints
     best_manager = min(manager_workloads, key=lambda x: x[1])[0]
     return best_manager
 
 
-# ── Business Logic ─────────────────────────────────────────────────────────────
-
-# Maps known Nominatim ISO codes and city names to the state names used in MOCK_MANAGERS
-_STATE_ALIASES: dict[str, str] = {
-    # Delhi / NCT
-    "IN-DL": "Delhi", "nct of delhi": "Delhi", "delhi": "Delhi",
-    "new delhi": "Delhi",
-}
+# ── State resolution ────────────────────────────────────────────────────────
 
 def _resolve_state_from_address(addr: dict) -> str:
-    """Tries multiple Nominatim address fields to find a known state."""
     candidates = [
         addr.get("state", ""),
         addr.get("state_district", ""),
@@ -169,17 +147,15 @@ def _resolve_state_from_address(addr: dict) -> str:
         if not val:
             continue
         key = val.strip().lower()
-        if key in _STATE_ALIASES:
-            return _STATE_ALIASES[key]
-        # Check if any alias is a substring (e.g. "nct of delhi")
-        for alias, state_name in _STATE_ALIASES.items():
+        if key in STATE_ALIASES:
+            return STATE_ALIASES[key]
+        for alias, state_name in STATE_ALIASES.items():
             if alias in key or key in alias:
                 return state_name
     return "Unknown"
 
 
 def get_state_from_coords(lat: float, lng: float) -> str:
-    """Reverse geocodes coordinates to find the State."""
     try:
         location = geolocator.reverse((lat, lng), exactly_one=True, timeout=10)
         if location and "address" in location.raw:
@@ -190,42 +166,38 @@ def get_state_from_coords(lat: float, lng: float) -> str:
 
 
 def get_state_from_address_text(address: str) -> str:
-    """Extracts state from a free-text address string (used when no GPS coords)."""
     lower = address.lower()
-    for alias, state_name in _STATE_ALIASES.items():
+    for alias, state_name in STATE_ALIASES.items():
         if alias in lower:
             return state_name
     return "Unknown"
 
+
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Calculates the circular distance between two points in km."""
-    R = 6371  # Earth radius in km
+    R = 6371
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
-    a = (math.sin(dlat / 2)**2 + 
-         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * 
-         math.sin(dlon / 2)**2)
-    c = 2 * math.asin(math.sqrt(a))
-    return R * c
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(dlon / 2) ** 2
+    )
+    return R * 2 * math.asin(math.sqrt(a))
 
 
-SLA_HOURS: dict[str, int] = {
-    "Safety": 12, "Water": 24, "Garbage": 48, "Sanitation": 48,
-    "Streetlight": 72, "Pothole": 96, "Construction": 120, "Other": 72,
-}
-
-CATEGORY_PRIORITY: dict[str, float] = {
-    "Safety": 0.4, "Water": 0.3, "Sanitation": 0.25, "Pothole": 0.15,
-    "Streetlight": 0.1, "Garbage": 0.05, "Construction": 0.20, "Other": 0.0,
-}
-
+# ── Business logic helpers ──────────────────────────────────────────────────
 
 def get_sla_hours(category: str) -> int:
     return SLA_HOURS.get(category, 72)
 
 
 def calculate_priority(category: str, verification_count: int = 0) -> float:
-    score = 0.5 + CATEGORY_PRIORITY.get(category, 0.0) + min(0.15, verification_count * 0.05)
+    score = (
+        PRIORITY_BASE
+        + CATEGORY_PRIORITY.get(category, 0.0)
+        + min(PRIORITY_VERIFY_CAP, verification_count * PRIORITY_VERIFY_PER_VOTE)
+    )
     return round(min(1.0, score), 3)
 
 
@@ -239,8 +211,7 @@ def _map_doc(doc: dict) -> dict:
                 out[field] = json.loads(out[field])
             except Exception:
                 pass
-    
-    # Extract verifiedBy from timeline notes as a virtual field
+
     verified_by = []
     timeline = out.get("timeline")
     if isinstance(timeline, list):
@@ -250,11 +221,10 @@ def _map_doc(doc: dict) -> dict:
                 verifier_id = note_content.split("Verified by user:")[1].strip()
                 verified_by.append(verifier_id)
     out["verifiedBy"] = list(set(verified_by))
-        
     return out
 
 
-# ── Models ────────────────────────────────────────────────────────────────────
+# ── Pydantic models ─────────────────────────────────────────────────────────
 
 class ComplaintCreate(BaseModel):
     category: str
@@ -287,24 +257,23 @@ class ShareCardUpdate(BaseModel):
     photoUrl: str
 
 
-# ── Routes ────────────────────────────────────────────────────────────────────
+# ── Routes ──────────────────────────────────────────────────────────────────
 
 @router.get("")
 async def list_complaints(
     lat: Optional[float] = None,
     lng: Optional[float] = None,
-    radius: Optional[float] = 5.0,  # default 5km radius
+    radius: Optional[float] = DEFAULT_SEARCH_RADIUS_KM,
     managerId: Optional[str] = None,
 ):
     try:
-        queries = [Query.order_desc("createdAt"), Query.limit(100)]
+        queries = [Query.order_desc("createdAt"), Query.limit(COMPLAINT_LIST_LIMIT)]
         if managerId:
             queries.append(Query.equal("assignedManagerId", managerId))
 
         resp = databases.list_documents(DATABASE_ID, COLLECTION_ID, queries=queries)
         complaints = [_map_doc(d) for d in resp["documents"]]
 
-        # If lat/lng are provided, further filter by distance
         if lat is not None and lng is not None:
             filtered = []
             for c in complaints:
@@ -326,8 +295,9 @@ async def list_complaints(
 
 @router.get("/managers")
 async def get_managers():
-    """Returns the list of all available managers."""
-    return MOCK_MANAGERS
+    """Returns all managers fetched from Appwrite users (role=manager)."""
+    managers = _fetch_managers_from_appwrite()
+    return managers
 
 
 @router.post("", status_code=201)
@@ -337,35 +307,45 @@ async def create_complaint(body: ComplaintCreate):
         sla_hours = get_sla_hours(body.category)
         priority = calculate_priority(body.category)
         timeline = json.dumps([{
-            "status": "Submitted", "timestamp": now,
-            "note": "Complaint submitted successfully", "actor": "Citizen",
+            "status": "Submitted",
+            "timestamp": now,
+            "note": "Complaint submitted successfully",
+            "actor": "Citizen",
         }])
 
-        # Resolve state from GPS coordinates, fallback to address text
+        # Resolve state
         state = "Unknown"
         if body.coordinates:
-            state = get_state_from_coords(body.coordinates["lat"], body.coordinates["lng"])
+            state = get_state_from_coords(
+                body.coordinates["lat"], body.coordinates["lng"]
+            )
         if state == "Unknown" and body.address:
             state = get_state_from_address_text(body.address)
-        
-        # Use frontend-provided manager if available, otherwise auto-assign
+
+        # Assign manager
         if body.assignedManagerName and body.assignedManagerState:
-            # Look up the actual manager by name
-            found_mgr = next((m for m in MOCK_MANAGERS if m["name"] == body.assignedManagerName), None)
+            all_managers = _fetch_managers_from_appwrite()
+            found_mgr = next(
+                (m for m in all_managers if m["name"] == body.assignedManagerName), None
+            )
             if found_mgr:
                 assigned_manager = found_mgr
             else:
-                assigned_manager = {"id": f"MGR-{body.assignedManagerState[:3].upper()}", "name": body.assignedManagerName}
+                # Manager name provided but not found in Appwrite; create a stub
+                assigned_manager = {
+                    "id": f"MGR-{body.assignedManagerState[:3].upper()}",
+                    "name": body.assignedManagerName,
+                }
         else:
-            # Assign manager based on location (least-loaded manager for this zone)
             coords_dict = body.coordinates if body.coordinates else None
-            assigned_manager = assign_manager_to_complaint(state, body.address or "", coords_dict)
+            assigned_manager = assign_manager_to_complaint(
+                state, body.address or "", coords_dict
+            )
 
-        # Create payload without assignedManagerName and assignedManagerState (Appwrite doesn't have these fields)
         payload_dict = body.model_dump()
         payload_dict.pop("assignedManagerName", None)
         payload_dict.pop("assignedManagerState", None)
-        
+
         payload = {
             **payload_dict,
             "status": "Submitted",
@@ -390,12 +370,23 @@ async def create_complaint(body: ComplaintCreate):
 @router.get("/user/{user_id}")
 async def complaints_by_user(user_id: str, email: Optional[str] = None):
     try:
-        queries_1 = [Query.equal("reporterId", user_id), Query.order_desc("createdAt"), Query.limit(100)]
-        r1 = databases.list_documents(DATABASE_ID, COLLECTION_ID, queries=queries_1)
-        r2 = databases.list_documents(DATABASE_ID, COLLECTION_ID,
-            queries=[Query.equal("userId", user_id), Query.order_desc("createdAt"), Query.limit(100)])
+        r1 = databases.list_documents(
+            DATABASE_ID, COLLECTION_ID,
+            queries=[
+                Query.equal("reporterId", user_id),
+                Query.order_desc("createdAt"),
+                Query.limit(COMPLAINT_LIST_LIMIT),
+            ],
+        )
+        r2 = databases.list_documents(
+            DATABASE_ID, COLLECTION_ID,
+            queries=[
+                Query.equal("userId", user_id),
+                Query.order_desc("createdAt"),
+                Query.limit(COMPLAINT_LIST_LIMIT),
+            ],
+        )
         all_docs = r1["documents"] + r2["documents"]
-        
         seen, unique = set(), []
         for d in all_docs:
             if d["$id"] not in seen:
@@ -431,27 +422,23 @@ async def update_status(complaint_id: str, body: StatusUpdate):
             "note": body.note,
             "actor": body.actor,
         })
-        
-        # Build update payload - include assignedTo if provided
+
         update_payload = {
             "status": body.status,
             "timeline": json.dumps(timeline),
             "updatedAt": datetime.now(UTC).isoformat(),
         }
-        
         if body.assignedTo:
             update_payload["assignedTo"] = body.assignedTo
-        
         if body.photoUrl:
             update_payload["photoUrl"] = body.photoUrl
-        
+
         databases.update_document(DATABASE_ID, COLLECTION_ID, complaint_id, update_payload)
         updated = databases.get_document(DATABASE_ID, COLLECTION_ID, complaint_id)
         return _map_doc(updated)
     except HTTPException:
         raise
     except Exception as e:
-        print(f"STATUS_UPDATE_ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -460,7 +447,6 @@ async def update_share_card(complaint_id: str, body: ShareCardUpdate):
     try:
         if not body.photoUrl:
             raise HTTPException(status_code=400, detail="photoUrl is required")
-
         databases.update_document(DATABASE_ID, COLLECTION_ID, complaint_id, {
             "photoUrl": body.photoUrl,
             "updatedAt": datetime.now(UTC).isoformat(),
@@ -470,7 +456,6 @@ async def update_share_card(complaint_id: str, body: ShareCardUpdate):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"SHARE_CARD_UPDATE_ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -478,11 +463,11 @@ async def update_share_card(complaint_id: str, body: ShareCardUpdate):
 async def assign_manager(complaint_id: str, body: AssignManager):
     """Assign a complaint to a specific manager."""
     try:
-        # Validate manager exists
-        manager = next((m for m in MOCK_MANAGERS if m["id"] == body.managerId), None)
+        all_managers = _fetch_managers_from_appwrite()
+        manager = next((m for m in all_managers if m["id"] == body.managerId), None)
         if not manager:
             raise HTTPException(status_code=400, detail="Manager not found")
-        
+
         doc = databases.get_document(DATABASE_ID, COLLECTION_ID, complaint_id)
         timeline = doc.get("timeline", "[]")
         if isinstance(timeline, str):
@@ -490,15 +475,14 @@ async def assign_manager(complaint_id: str, body: AssignManager):
                 timeline = json.loads(timeline)
             except Exception:
                 timeline = []
-        
-        # Add assignment event to timeline
+
         timeline.append({
             "status": "Assigned",
             "timestamp": datetime.now(UTC).isoformat(),
             "note": f"Assigned to {manager['name']}",
             "actor": "Admin",
         })
-        
+
         databases.update_document(DATABASE_ID, COLLECTION_ID, complaint_id, {
             "assignedManagerId": body.managerId,
             "assignedManagerName": manager["name"],
@@ -506,13 +490,10 @@ async def assign_manager(complaint_id: str, body: AssignManager):
             "timeline": json.dumps(timeline),
             "updatedAt": datetime.now(UTC).isoformat(),
         })
-        
+
         updated = databases.get_document(DATABASE_ID, COLLECTION_ID, complaint_id)
         return _map_doc(updated)
     except HTTPException:
         raise
     except Exception as e:
-        print(f"ASSIGN_ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
