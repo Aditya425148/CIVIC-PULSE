@@ -2,7 +2,6 @@ import { useState, useEffect } from "react";
 import { useNavigate, Outlet, NavLink } from "react-router";
 import { LayoutDashboard, Users, LogOut, Shield, Menu, X } from "lucide-react";
 import { account } from "../../appwrite";
-import { mockManagers } from "../../data/mockData";
 
 const navItems = [
   { to: "/manager", icon: LayoutDashboard, label: "Area Overview", end: true },
@@ -18,29 +17,14 @@ export default function ManagerLayout() {
     account
       .get()
       .then((user) => {
-        // Prioritize the name from mockManagers for consistent branding
-        // Use the manual email override if it exists, otherwise use account email
-        const userEmail =
-          localStorage.getItem("manager_email_override") || user.email;
-        const mockConfig = mockManagers.find(
-          (m) => m.email.toLowerCase() === userEmail.toLowerCase(),
-        );
         setManager({
           ...user,
-          name: mockConfig?.name || user.name || "Manager",
-          email: userEmail,
+          name: user.name || "Manager",
+          email: user.email,
         });
       })
       .catch(() => {
-        // Fallback for demo/dev purposes - check if we have a name in localStorage
-        const overrideEmail = localStorage.getItem("manager_email_override");
-        const mockConfig = mockManagers.find(
-          (m) => m.email.toLowerCase() === (overrideEmail?.toLowerCase() || ""),
-        );
-        setManager({
-          name: mockConfig?.name || "Sanjay Sharma",
-          email: overrideEmail || "sanjay@pscrm.gov.in",
-        });
+        navigate("/login", { replace: true });
       });
   }, [navigate]);
 

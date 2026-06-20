@@ -22,14 +22,6 @@ import { exportDataToPDF } from "../../utils/pdfExport";
 import { Complaint } from "../../data/mockData";
 import { toast } from "sonner";
 
-const MOCK_MANAGERS = [
-  { id: "MGR-DEL-S01", name: "Sanjay Sharma", state: "South Delhi" },
-  { id: "MGR-DEL-C01", name: "Meena Kumari", state: "Central & New Delhi" },
-  { id: "MGR-DEL-E01", name: "Rajesh Tyagi", state: "East Delhi & Shahdara" },
-  { id: "MGR-DEL-W01", name: "Anita Singh", state: "West Delhi" },
-  { id: "MGR-DEL-N01", name: "Amit Goel", state: "North & North-West Delhi" },
-];
-
 const slaStatus = (remaining: number, status: string) => {
   if (["Resolved", "Closed"].includes(status))
     return {
@@ -77,14 +69,19 @@ export default function AdminQueue() {
     useState<Complaint | null>(null);
   const [selectedReassignManager, setSelectedReassignManager] = useState("");
   const [reassignLoading, setReassignLoading] = useState(false);
+  const [managers, setManagers] = useState<any[]>([]);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const data = await appwriteService.getAllComplaints();
-        setComplaints(data);
+        const [complaintsData, managersData] = await Promise.all([
+          appwriteService.getAllComplaints(),
+          api.get<any[]>("/api/complaints/managers"),
+        ]);
+        setComplaints(complaintsData);
+        setManagers(managersData);
       } catch (error) {
-        console.error("Error fetching complaints:", error);
+        console.error("Error fetching data:", error);
       } finally {
         setLoading(false);
       }
@@ -477,7 +474,7 @@ export default function AdminQueue() {
               Select a manager to reassign:
             </p>
             <div className="space-y-2 mb-5 max-h-64 overflow-y-auto">
-              {MOCK_MANAGERS.map((mgr) => (
+              {managers.map((mgr) => (
                 <label
                   key={mgr.id}
                   className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
@@ -496,15 +493,20 @@ export default function AdminQueue() {
                   />
                   <div className="w-8 h-8 rounded-full bg-gradient-to-br from-sky-500 to-indigo-600 text-white flex items-center justify-center text-xs font-[700]">
                     {mgr.name
-                      .split(" ")
-                      .map((n) => n[0])
-                      .join("")}
+                      ? mgr.name
+                          .split(" ")
+                          .filter(Boolean)
+                          .map((n: string) => n[0])
+                          .join("")
+                      : "M"}
                   </div>
                   <div className="flex-1">
                     <div className="text-sm font-[600] text-slate-800">
                       {mgr.name}
                     </div>
-                    <div className="text-xs text-slate-400">{mgr.state}</div>
+                    <div className="text-xs text-slate-400">
+                      {mgr.state || "Delhi"} • Zone: {mgr.zone ? mgr.zone.toUpperCase() : "None"}
+                    </div>
                   </div>
                 </label>
               ))}
@@ -515,16 +517,28 @@ export default function AdminQueue() {
                   if (!selectedReassignManager || !selectedRejectedComplaint)
                     return;
 
+                  const manager = managers.find(
+                    (m) => m.id === selectedReassignManager,
+                  );
+                  if (!manager) {
+                    toast.error("Manager not found");
+                    return;
+                  }
+
+                  // Oh! This manager doesn't work here warning prompt
+                  if (
+                    selectedRejectedComplaint.area &&
+                    manager.zone &&
+                    selectedRejectedComplaint.area.toLowerCase() !== manager.zone.toLowerCase()
+                  ) {
+                    const proceed = window.confirm(
+                      `Oh! This manager doesn't work here!\n\n${manager.name} manages the ${manager.zone.toUpperCase()} zone, but this complaint is in the ${selectedRejectedComplaint.area.toUpperCase()} zone.\n\nDo you still want to reassign it?`
+                    );
+                    if (!proceed) return;
+                  }
+
                   setReassignLoading(true);
                   try {
-                    const manager = MOCK_MANAGERS.find(
-                      (m) => m.id === selectedReassignManager,
-                    );
-                    if (!manager) {
-                      toast.error("Manager not found");
-                      return;
-                    }
-
                     // Reassign complaint to new manager
                     await api.patch(
                       `/api/complaints/${selectedRejectedComplaint.id}/assign`,
@@ -586,7 +600,7 @@ export default function AdminQueue() {
               IDs: {selectedIds.join(", ")}
             </div>
             <div className="space-y-2 mb-5">
-              {MOCK_MANAGERS.map((mgr) => (
+              {managers.map((mgr) => (
                 <label
                   key={mgr.id}
                   className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
@@ -605,15 +619,20 @@ export default function AdminQueue() {
                   />
                   <div className="w-8 h-8 rounded-full bg-gradient-to-br from-sky-500 to-indigo-600 text-white flex items-center justify-center text-xs font-[700]">
                     {mgr.name
-                      .split(" ")
-                      .map((n) => n[0])
-                      .join("")}
+                      ? mgr.name
+                          .split(" ")
+                          .filter(Boolean)
+                          .map((n: string) => n[0])
+                          .join("")
+                      : "M"}
                   </div>
                   <div className="flex-1">
                     <div className="text-sm font-[600] text-slate-800">
                       {mgr.name}
                     </div>
-                    <div className="text-xs text-slate-400">{mgr.state}</div>
+                    <div className="text-xs text-slate-400">
+                      {mgr.state || "Delhi"} • Zone: {mgr.zone ? mgr.zone.toUpperCase() : "None"}
+                    </div>
                   </div>
                 </label>
               ))}
@@ -623,16 +642,37 @@ export default function AdminQueue() {
                 onClick={async () => {
                   if (!selectedOfficer) return;
 
+                  const manager = managers.find(
+                    (m) => m.id === selectedOfficer,
+                  );
+                  if (!manager) {
+                    toast.error("Manager not found");
+                    return;
+                  }
+
+                  // Oh! This manager doesn't work here warning prompt for bulk assignment
+                  const selectedComplaints = complaints.filter((c) =>
+                    selectedIds.includes(c.id),
+                  );
+                  const mismatched = selectedComplaints.filter(
+                    (c) =>
+                      c.area &&
+                      manager.zone &&
+                      c.area.toLowerCase() !== manager.zone.toLowerCase(),
+                  );
+
+                  if (mismatched.length > 0) {
+                    const mismatchedAreas = Array.from(
+                      new Set(mismatched.map((c) => c.area?.toUpperCase())),
+                    ).join(", ");
+                    const proceed = window.confirm(
+                      `Oh! This manager doesn't work here!\n\n${manager.name} manages the ${manager.zone.toUpperCase()} zone, but some selected complaints are in the following mismatching zone(s): ${mismatchedAreas}.\n\nDo you still want to assign them anyway?`
+                    );
+                    if (!proceed) return;
+                  }
+
                   setAssignLoading(true);
                   try {
-                    const manager = MOCK_MANAGERS.find(
-                      (m) => m.id === selectedOfficer,
-                    );
-                    if (!manager) {
-                      toast.error("Manager not found");
-                      return;
-                    }
-
                     // Assign each selected complaint to the manager
                     for (const complaintId of selectedIds) {
                       await api.patch(`/api/complaints/${complaintId}/assign`, {

@@ -1,7 +1,6 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import {
   Phone,
-  MessageSquare,
   MapPin,
   Shield,
   Star,
@@ -13,19 +12,16 @@ import {
   Trash2,
   Plus,
 } from "lucide-react";
-import {
-  mockWorkers,
-  mockManagers,
-  Worker,
-  Manager,
-} from "../../data/mockData";
+import { Worker } from "../../data/mockData";
 import { account } from "../../appwrite";
+import { api } from "../../api";
 import { motion, AnimatePresence } from "motion/react";
 import { toast } from "sonner";
 
 export default function ManagerWorkers() {
   const [manager, setManager] = useState<any>(null);
   const [workers, setWorkers] = useState<Worker[]>([]);
+  const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
 
   // New Worker Form State
@@ -36,39 +32,40 @@ export default function ManagerWorkers() {
     rating: 4.5,
   });
 
+  const fetchWorkers = () => {
+    setLoading(true);
+    api.get<Worker[]>("/api/workers")
+      .then((data) => {
+        setWorkers(data);
+      })
+      .catch((err) => {
+        toast.error("Failed to load field workforce");
+        console.error(err);
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  };
+
   useEffect(() => {
     account
       .get()
       .then((user) => {
-        const mockConfig = mockManagers.find(
-          (m: Manager) => m.email.toLowerCase() === user.email.toLowerCase(),
-        );
         const managerData = {
           ...user,
-          managedState: mockConfig?.managedState || "Delhi",
-          managedAreas: mockConfig?.managedAreas || ["North Delhi"],
+          managedState: user.prefs?.state || "Delhi",
+          managedAreas: user.prefs?.zone ? [user.prefs.zone] : ["central_new"],
         };
         setManager(managerData);
-
-        // Load initial workers for this manager
-        const initialWorkers = mockWorkers.filter(
-          (w) =>
-            w.state === managerData.managedState &&
-            managerData.managedAreas.some(
-              (area) =>
-                w.area.toLowerCase().includes(area.toLowerCase()) ||
-                area.toLowerCase().includes(w.area.toLowerCase()),
-            ),
-        );
-        setWorkers(initialWorkers);
+        fetchWorkers();
       })
       .catch(() => {
-        // Fallback
-        const fallback = mockManagers[0];
-        setManager(fallback);
-        setWorkers(
-          mockWorkers.filter((w) => w.state === fallback.managedState),
-        );
+        setManager({
+          name: "Sanjay Sharma",
+          managedState: "Delhi",
+          managedAreas: ["central_new"],
+        });
+        fetchWorkers();
       });
   }, []);
 
@@ -79,28 +76,38 @@ export default function ManagerWorkers() {
       return;
     }
 
-    const workerToAdd: Worker = {
-      id: "WKR-" + Math.random().toString(36).substr(2, 9).toUpperCase(),
+    const payload = {
       name: newWorker.name,
       phone: newWorker.phone,
-      state: manager.managedState,
       area: newWorker.area,
-      status: "Available",
+      state: manager.managedState,
       rating: newWorker.rating,
     };
 
-    setWorkers((prev) => [workerToAdd, ...prev]);
-    setShowAddModal(false);
-    setNewWorker({ name: "", phone: "", area: "", rating: 4.5 });
-    toast.success(newWorker.name + " added to field force");
+    api.post<Worker>("/api/workers", payload)
+      .then((created) => {
+        setWorkers((prev) => [created, ...prev]);
+        setShowAddModal(false);
+        setNewWorker({ name: "", phone: "", area: "", rating: 4.5 });
+        toast.success(newWorker.name + " deployed to field force");
+      })
+      .catch((err) => {
+        toast.error("Failed to add worker: " + err.message);
+      });
   };
 
   const removeWorker = (id: string) => {
-    setWorkers((prev) => prev.filter((w) => w.id !== id));
-    toast.info("Worker removed from your list");
+    api.delete(`/api/workers/${id}`)
+      .then(() => {
+        setWorkers((prev) => prev.filter((w) => w.id !== id));
+        toast.info("Worker removed from your list");
+      })
+      .catch((err) => {
+        toast.error("Failed to remove worker: " + err.message);
+      });
   };
 
-  if (!manager)
+  if (!manager || loading)
     return <div className="p-8 text-slate-500">Loading workforce...</div>;
 
   return (

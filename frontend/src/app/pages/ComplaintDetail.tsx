@@ -19,12 +19,8 @@ import {
   Download,
   Camera,
   Wrench,
+  Share2,
 } from "lucide-react";
-
-import { MOCK_ADMIN_MANAGERS } from "../utils/adminInsights";
-
-// Use the shared manager list as the single source of truth
-const MOCK_MANAGERS = MOCK_ADMIN_MANAGERS;
 
 const statusColors: Record<string, string> = {
   Submitted: "bg-slate-100 text-slate-600",
@@ -60,6 +56,18 @@ export default function ComplaintDetail() {
   const [showReassignModal, setShowReassignModal] = useState(false);
   const [selectedReassignManager, setSelectedReassignManager] = useState("");
   const [isReassigning, setIsReassigning] = useState(false);
+  const [managers, setManagers] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (showReassignModal) {
+      api.get<any[]>("/api/complaints/managers")
+        .then(setManagers)
+        .catch((err) => {
+          console.error("Failed to fetch managers for reassignment:", err);
+          toast.error("Failed to load managers");
+        });
+    }
+  }, [showReassignModal]);
 
   useEffect(() => {
     account
@@ -991,7 +999,7 @@ export default function ComplaintDetail() {
               Select a manager to reassign:
             </p>
             <div className="space-y-2 mb-5 max-h-64 overflow-y-auto">
-              {MOCK_MANAGERS.map((mgr) => (
+              {managers.map((mgr) => (
                 <label
                   key={mgr.id}
                   className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
@@ -1010,18 +1018,26 @@ export default function ComplaintDetail() {
                   />
                   <div className="w-8 h-8 rounded-full bg-gradient-to-br from-sky-500 to-indigo-600 text-white flex items-center justify-center text-xs font-[700]">
                     {mgr.name
-                      .split(" ")
-                      .map((n) => n[0])
-                      .join("")}
+                      ? mgr.name
+                          .split(" ")
+                          .filter(Boolean)
+                          .map((n: string) => n[0])
+                          .join("")
+                      : "M"}
                   </div>
                   <div className="flex-1">
                     <div className="text-sm font-[600] text-slate-800">
                       {mgr.name}
                     </div>
-                    <div className="text-xs text-slate-400">{mgr.state}</div>
+                    <div className="text-xs text-slate-400">{mgr.state || "Delhi"}</div>
                   </div>
                 </label>
               ))}
+              {managers.length === 0 && (
+                <div className="text-center py-4 text-xs text-slate-400">
+                  No managers found
+                </div>
+              )}
             </div>
             <div className="flex gap-3">
               <button
@@ -1030,7 +1046,7 @@ export default function ComplaintDetail() {
 
                   setIsReassigning(true);
                   try {
-                    const manager = MOCK_MANAGERS.find(
+                    const manager = managers.find(
                       (m) => m.id === selectedReassignManager,
                     );
                     if (!manager) {

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
+import { useNavigate } from "react-router";
 import {
   MapPin,
   Clock,
@@ -30,6 +31,7 @@ interface WorkerTask {
 }
 
 export default function WorkerDashboard() {
+  const navigate = useNavigate();
   const [worker, setWorker] = useState<any>(null);
   const [tasks, setTasks] = useState<WorkerTask[]>([]);
   const [selectedTask, setSelectedTask] = useState<WorkerTask | null>(null);
@@ -40,39 +42,41 @@ export default function WorkerDashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // First check if worker data is in session (from mock login)
-    const workerDataStr = sessionStorage.getItem("workerData");
-    if (workerDataStr) {
-      setWorker(JSON.parse(workerDataStr));
-      return;
-    }
-
-    // Otherwise try to get from Appwrite (for real production users)
+    // Check Appwrite first
     account
       .get()
       .then((user) => {
         setWorker({
-          id: "WKR-" + Math.random().toString(36).substr(2, 5).toUpperCase(),
+          id: user.$id,
           name: user.name || "Worker",
           email: user.email,
         });
       })
-      .catch(() => setWorker({ id: "WKR-001", name: "Worker", email: "worker@example.com" }));
-  }, []);
+      .catch(() => {
+        // Fallback to session storage (mock login compatibility)
+        const workerDataStr = sessionStorage.getItem("workerData");
+        if (workerDataStr) {
+          setWorker(JSON.parse(workerDataStr));
+        } else {
+          navigate("/login", { replace: true });
+        }
+      });
+  }, [navigate]);
 
   useEffect(() => {
     if (!worker) return;
     
+    setLoading(true);
     // Fetch assigned complaints
     api
       .get<any>("/api/complaints")
       .then((data) => {
-        // Filter for Assigned and In Progress complaints
         const workerTasks = (Array.isArray(data) ? data : [])
           .filter(
             (c: any) =>
-              c.status === "Assigned" ||
-              c.status === "In Progress"
+              (c.status === "Assigned" || c.status === "In Progress") &&
+              (c.assignedTo?.toLowerCase() === worker.name?.toLowerCase() ||
+               c.assignedTo === worker.id)
           )
           .map((c: any) => ({
             id: c.id,
@@ -92,35 +96,9 @@ export default function WorkerDashboard() {
         
         setTasks(workerTasks);
       })
-      .catch(() => {
-        // Fallback: mock data
-        const mockTasks: WorkerTask[] = [
-          {
-            id: "CRM-2024-00125",
-            category: "Pothole",
-            address: "123 Main Street, Delhi",
-            description: "Large pothole on main road causing accidents",
-            status: "Assigned",
-            createdAt: new Date().toISOString(),
-            citizenName: "Rajesh Kumar",
-            citizenPhone: "+919876543210",
-            priority: 0.55,
-            distance: 1.2,
-          },
-          {
-            id: "CRM-2024-00126",
-            category: "Streetlight",
-            address: "456 Oak Lane, Delhi",
-            description: "Street light not working at night for 2 weeks",
-            status: "In Progress",
-            createdAt: new Date(Date.now() - 3600000).toISOString(),
-            citizenName: "Priya Sharma",
-            citizenPhone: "+919876543211",
-            priority: 0.3,
-            distance: 2.5,
-          },
-        ];
-        setTasks(mockTasks);
+      .catch((err) => {
+        toast.error("Failed to load assigned tasks");
+        console.error(err);
       })
       .finally(() => setLoading(false));
   }, [worker]);

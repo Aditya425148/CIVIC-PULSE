@@ -2,19 +2,50 @@ import { useState, useEffect } from "react";
 import { CheckCircle2, Award, TrendingUp } from "lucide-react";
 import { motion } from "motion/react";
 import { api } from "../../api";
+import { account } from "../../appwrite";
 import { Complaint } from "../../data/mockData";
 
 export default function WorkerResolved() {
+  const [worker, setWorker] = useState<any>(null);
   const [resolvedTasks, setResolvedTasks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Fetch worker session
+    account
+      .get()
+      .then((user) => {
+        setWorker({
+          id: user.$id,
+          name: user.name || "Worker",
+          email: user.email,
+        });
+      })
+      .catch(() => {
+        const workerDataStr = sessionStorage.getItem("workerData");
+        if (workerDataStr) {
+          setWorker(JSON.parse(workerDataStr));
+        } else {
+          setLoading(false);
+        }
+      });
+  }, []);
+
+  useEffect(() => {
+    if (!worker) return;
+
+    setLoading(true);
     // Fetch resolved complaints
     api
       .get<any>("/api/complaints")
       .then((data) => {
         const resolved = (Array.isArray(data) ? data : [])
-          .filter((c: any) => c.status === "Resolved" || c.status === "Closed")
+          .filter(
+            (c: any) =>
+              (c.status === "Resolved" || c.status === "Closed") &&
+              (c.assignedTo?.toLowerCase() === worker.name?.toLowerCase() ||
+               c.assignedTo === worker.id)
+          )
           .map((c: any) => ({
             id: c.id,
             category: c.category || "Other",
@@ -33,7 +64,7 @@ export default function WorkerResolved() {
       })
       .catch(() => setResolvedTasks([]))
       .finally(() => setLoading(false));
-  }, []);
+  }, [worker]);
 
   if (loading) {
     return (

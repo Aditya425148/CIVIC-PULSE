@@ -7,15 +7,15 @@ interface ProtectedRouteProps {
 }
 
 /**
- * ProtectedRoute checks if the user has a valid session.
- * If not, it redirects to /login.
+ * ProtectedRoute checks if the user has a valid Appwrite session.
+ * Role is read from user.prefs.role (set by admin via Appwrite console or API).
+ * Allowed roles: "admin", "manager", "worker", "citizen" (default).
  */
 export default function ProtectedRoute({ allowedRoles }: ProtectedRouteProps) {
   const [checking, setChecking] = useState(true);
   const [user, setUser] = useState<any>(null);
 
   useEffect(() => {
-    // Check if user is logged in
     authService
       .getCurrentUser()
       .then((userData) => {
@@ -46,44 +46,24 @@ export default function ProtectedRoute({ allowedRoles }: ProtectedRouteProps) {
   }
 
   if (!user) {
-    // Session is invalid or expired
     return <Navigate to="/login" replace />;
   }
 
-  // Check roles if specified
   if (allowedRoles && allowedRoles.length > 0) {
-    const userRoles = user.labels || [];
-    // FOR DEVELOPER ACCESS: Allow anonymous users to bypass role checks if they are in a demo session
-    // Appwrite anonymous users usually have empty email and specific status.
-    // We check for absence of email or specific flag to allow demo access.
-    const isAnonymous =
-      !user.email || user.email === "" || user.status === false;
-
-    // BYPASS FOR LOCAL ADMIN DEMO
-    const isAdminBypass = localStorage.getItem("is_admin_bypass") === "true";
-
-    console.log("ProtectedRoute Check:", {
-      user,
-      allowedRoles,
-      userRoles,
-      isAnonymous,
-      isAdminBypass,
-    });
+    // Role is stored in Appwrite user prefs (set via admin API or console)
+    const userRole: string = user.prefs?.role ?? "citizen";
+    // Appwrite labels also supported for backwards compatibility
+    const userLabels: string[] = user.labels ?? [];
 
     const hasPermission =
-      allowedRoles.some((role) => userRoles.includes(role)) ||
-      isAnonymous ||
-      (allowedRoles.includes("admin") && isAdminBypass);
+      allowedRoles.includes(userRole) ||
+      allowedRoles.some((r) => userLabels.includes(r)) ||
+      // Any authenticated user can access citizen routes
+      allowedRoles.includes("citizen");
 
-    // Special case for "citizen" which is the default for any logged in user if not specifically restricted
-    const isCitizen = allowedRoles.includes("citizen") && user;
-
-    if (!hasPermission && !isCitizen) {
+    if (!hasPermission) {
       console.warn(
-        "User does not have required roles:",
-        allowedRoles,
-        "User roles:",
-        userRoles,
+        `[ProtectedRoute] Access denied. Required: ${allowedRoles.join(", ")}. User role: ${userRole}`,
       );
       return <Navigate to="/dashboard" replace />;
     }

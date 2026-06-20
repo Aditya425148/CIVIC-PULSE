@@ -10,7 +10,7 @@ import {
   ChevronRight,
   MapPin,
 } from "lucide-react";
-import { MOCK_ADMIN_MANAGERS } from "../../utils/adminInsights";
+import { fetchManagers, type AdminManager } from "../../utils/adminInsights";
 
 const STATUS_COLORS: Record<string, string> = {
   Submitted: "bg-slate-100 text-slate-600",
@@ -22,8 +22,10 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 function initials(name: string) {
+  if (!name) return "M";
   return name
     .split(" ")
+    .filter(Boolean)
     .map((n) => n[0])
     .join("")
     .slice(0, 2)
@@ -33,12 +35,13 @@ function initials(name: string) {
 export default function AdminManagers() {
   const [complaints, setComplaints] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedMgr, setSelectedMgr] = useState<
-    (typeof MOCK_ADMIN_MANAGERS)[0] | null
-  >(null);
+  const [managers, setManagers] = useState<AdminManager[]>([]);
+  const [selectedMgr, setSelectedMgr] = useState<AdminManager | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   useEffect(() => {
+    fetchManagers().then(setManagers);
+
     const unsub = appwriteService.subscribeToComplaints((data) => {
       setComplaints(data);
       setLoading(false);
@@ -48,7 +51,7 @@ export default function AdminManagers() {
 
   // Compute per-manager stats from live complaints
   const managerStats = useMemo(() => {
-    return MOCK_ADMIN_MANAGERS.map((mgr) => {
+    return managers.map((mgr) => {
       const mine = complaints.filter((c) => c.assignedManagerId === mgr.id);
       const active = mine.filter(
         (c) => !["Resolved", "Closed"].includes(c.status),
@@ -71,7 +74,7 @@ export default function AdminManagers() {
         slaBreached,
       };
     });
-  }, [complaints]);
+  }, [complaints, managers]);
 
   const selectedMgrComplaints = useMemo(() => {
     if (!selectedMgr) return [];
@@ -83,7 +86,7 @@ export default function AdminManagers() {
       );
   }, [complaints, selectedMgr]);
 
-  const openDrawer = (mgr: (typeof MOCK_ADMIN_MANAGERS)[0]) => {
+  const openDrawer = (mgr: AdminManager) => {
     setSelectedMgr(mgr);
     setDrawerOpen(true);
   };
@@ -106,7 +109,7 @@ export default function AdminManagers() {
         {[
           {
             label: "Total Managers",
-            value: MOCK_ADMIN_MANAGERS.length,
+            value: managers.length,
             color: "text-sky-600",
           },
           {

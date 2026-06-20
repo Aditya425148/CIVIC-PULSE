@@ -1,13 +1,25 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "motion/react";
 import { Clock, Edit3, Save, X, Info, AlertTriangle } from "lucide-react";
-import { slaConfig } from "../../data/mockData";
+import { api } from "../../api";
 
 export default function AdminSLA() {
-  const [configs, setConfigs] = useState(
-    slaConfig.map((s, i) => ({ ...s, id: i, editing: false })),
-  );
+  const [configs, setConfigs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<Record<number, any>>({});
+
+  useEffect(() => {
+    api.get<any[]>("/api/config/sla")
+      .then((data) => {
+        setConfigs(data.map((s, i) => ({ ...s, id: i, editing: false })));
+        setLoading(false);
+      })
+      .catch((err) => {
+        setError(err.message || "Failed to load SLA configurations");
+        setLoading(false);
+      });
+  }, []);
 
   const startEdit = (id: number, config: any) => {
     setEditValues({ ...editValues, [id]: { ...config } });
@@ -22,16 +34,55 @@ export default function AdminSLA() {
     );
   };
 
-  const saveEdit = (id: number) => {
-    setConfigs((prev) =>
-      prev.map((c) =>
-        c.id === id ? { ...c, ...editValues[id], editing: false } : c,
-      ),
-    );
+  const saveEdit = async (id: number) => {
+    const updatedConfigs = configs.map((c) => {
+      if (c.id === id) {
+        return { ...c, ...editValues[id], editing: false };
+      }
+      return c;
+    });
+
+    // Remove client-side helper fields like 'id' and 'editing' before sending to backend
+    const payload = updatedConfigs.map(({ category, defaultSLA, escalationSLA, emergencySLA }) => ({
+      category,
+      defaultSLA,
+      escalationSLA,
+      emergencySLA: emergencySLA === "" ? null : emergencySLA,
+    }));
+
+    try {
+      setLoading(true);
+      const saved = await api.patch<any[]>("/api/config/sla", payload);
+      setConfigs(saved.map((s, i) => ({ ...s, id: i, editing: false })));
+      setError(null);
+    } catch (err: any) {
+      setError(err.message || "Failed to save SLA configuration");
+    } finally {
+      setLoading(false);
+    }
   };
 
+  if (loading && configs.length === 0) {
+    return (
+      <div className="flex items-center justify-center min-h-[50vh] p-8 text-slate-500">
+        <div className="animate-pulse flex flex-col items-center gap-4">
+          <div className="w-10 h-10 bg-slate-200 rounded-full"></div>
+          <div className="h-4 w-32 bg-slate-200 rounded"></div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="max-w-4xl mx-auto space-y-6">
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-800 rounded-[1.75rem] p-4 flex gap-3 shadow-[0_18px_40px_rgba(239,68,68,0.08)]">
+          <AlertTriangle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+          <div>
+            <div className="text-sm font-[600]">Error</div>
+            <div className="text-xs mt-0.5">{error}</div>
+          </div>
+        </div>
+      )}
       <div>
         <h1 className="text-2xl font-[800] text-[#ffcbd1]">
           SLA Configuration

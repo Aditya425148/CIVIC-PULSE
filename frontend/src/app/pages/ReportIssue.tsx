@@ -23,37 +23,7 @@ import { toast } from "sonner";
 import { toPng } from "html-to-image";
 import { appwriteService } from "../appwriteService";
 import { account } from "../appwrite";
-
-// Delhi Specific Manager Mapping (synced with backend zone-based IDs)
-const MANAGER_STATE_MAP: {
-  keywords: string[];
-  state: string;
-  managers: { id: string; name: string }[];
-}[] = [
-  {
-    state: "Delhi",
-    keywords: [
-      "delhi",
-      "new delhi",
-      "nd",
-      "ndmc",
-      "delhite",
-      "dwarka",
-      "rohini",
-      "saket",
-      "laxmi nagar",
-      "karol bagh",
-      "janakpuri",
-    ],
-    managers: [
-      { id: "MGR-DEL-S01", name: "Sanjay Sharma" },
-      { id: "MGR-DEL-C01", name: "Meena Kumari" },
-      { id: "MGR-DEL-E01", name: "Rajesh Tyagi" },
-      { id: "MGR-DEL-W01", name: "Anita Singh" },
-      { id: "MGR-DEL-N01", name: "Amit Goel" },
-    ],
-  },
-];
+import { fetchManagers, type AdminManager } from "../utils/adminInsights";
 
 const categories = [
   { id: "Garbage", icon: Trash2, description: "Overflow, dumping, litter" },
@@ -111,17 +81,76 @@ const subcategories: Record<string, string[]> = {
 
 type Step = 1 | 2 | 3 | 4 | 5;
 
+// Manager preview is now derived from real managers fetched from the API using zone logic
 function getManagerPreview(
   text: string,
-): { state: string; manager: { id: string; name: string } } | null {
+  coords: { lat: number; lng: number } | null,
+  managers: AdminManager[],
+): AdminManager | null {
+  if (managers.length === 0) return null;
   const lower = text.toLowerCase();
-  for (const group of MANAGER_STATE_MAP) {
-    if (group.keywords.some((kw) => lower.includes(kw))) {
-      // Pick a random-seeming but deterministic manager (first one as preview)
-      return { state: group.state, manager: group.managers[0] };
+
+  let zoneId = "central_new"; // Default zone
+  let foundByText = false;
+
+  const delhiZones = [
+    {
+      id: "south",
+      keywords: ["south delhi", "saket", "gk", "greater kailash", "hauz khas", "vasant vihar", "malviya nagar", "defence colony", "mehrauli", "chhatarpur", "qutub"]
+    },
+    {
+      id: "central_new",
+      keywords: ["central delhi", "new delhi", "connaught place", "cp", "karol bagh", "daryaganj", "civil lines", "paharganj", "india gate", "rajpath", "chandni chowk"]
+    },
+    {
+      id: "east_shahdara",
+      keywords: ["east delhi", "shahdara", "laxmi nagar", "preet vihar", "mayur vihar", "gandhi nagar", "anand vihar", "vivek vihar", "dilshad garden", "seelampur"]
+    },
+    {
+      id: "west",
+      keywords: ["west delhi", "rajouri garden", "punjabi bagh", "janakpuri", "patel nagar", "tilak nagar", "vikaspuri", "dwarka", "uttam nagar", "najafgarh"]
+    },
+    {
+      id: "north_nw",
+      keywords: ["north delhi", "north west delhi", "north-west delhi", "rohini", "model town", "narela", "delhi university", "du campus", "burari", "pitampura", "azadpur", "timarpur", "shalimar bagh", "ashok vihar"]
+    }
+  ];
+
+  for (const zone of delhiZones) {
+    if (zone.keywords.some((kw) => lower.includes(kw))) {
+      zoneId = zone.id;
+      foundByText = true;
+      break;
     }
   }
-  return null;
+
+  if (!foundByText && coords) {
+    const lat = coords.lat;
+    const lng = coords.lng;
+    const rules = [
+      { zone: "north_nw",      lat_min: 28.70, lat_max: null,  lng_min: null,  lng_max: null },
+      { zone: "south",         lat_min: null,  lat_max: 28.56, lng_min: null,  lng_max: null },
+      { zone: "east_shahdara", lat_min: null,  lat_max: null,  lng_min: 77.28, lng_max: null },
+      { zone: "west",          lat_min: null,  lat_max: null,  lng_min: null,  lng_max: 77.08 }
+    ];
+
+    for (const rule of rules) {
+      if (rule.lat_min !== null && lat < rule.lat_min) continue;
+      if (rule.lat_max !== null && lat > rule.lat_max) continue;
+      if (rule.lng_min !== null && lng < rule.lng_min) continue;
+      if (rule.lng_max !== null && lng > rule.lng_max) continue;
+      zoneId = rule.zone;
+      break;
+    }
+  }
+
+  // Find a Delhi manager matching the zone
+  const zoneManager = managers.find((m) => m.zone === zoneId && m.state.toLowerCase().includes("delhi"));
+  if (zoneManager) return zoneManager;
+
+  // Fallback to any Delhi manager
+  const delhiManager = managers.find((m) => m.state.toLowerCase().includes("delhi"));
+  return delhiManager || managers[0];
 }
 
 export default function ReportIssue() {
@@ -150,10 +179,16 @@ export default function ReportIssue() {
   const [isGeneratingCard, setIsGeneratingCard] = useState(false);
   const reportRef = useRef<HTMLDivElement>(null);
 
-  // Live manager preview — recomputed whenever address/area text changes
+  // Real managers fetched from backend
+  const [managers, setManagers] = useState<AdminManager[]>([]);
+  useEffect(() => {
+    fetchManagers().then(setManagers).catch(() => {});
+  }, []);
+
+  // Live manager preview — recomputed whenever address/area text or coords change
   const managerPreview = useMemo(
-    () => getManagerPreview(`${address} ${area}`),
-    [address, area],
+    () => getManagerPreview(`${address} ${area}`, coords, managers),
+    [address, area, coords, managers],
   );
 
   const steps = ["Category", "Location", "Details", "Photos", "Done"];
@@ -413,10 +448,10 @@ export default function ReportIssue() {
                     ? "Uttar Pradesh"
                     : "Unknown");
 
-              // Show manager preview based on detected state
-              const preview = getManagerPreview(state);
+              // Show manager preview based on detected state/address
+              const preview = getManagerPreview(`${address} ${area}`, { lat, lng }, managers);
               if (preview) {
-                setAssignedManagerName(preview.manager.name);
+                setAssignedManagerName(preview.name);
               }
             }
           } catch (error) {
@@ -429,21 +464,16 @@ export default function ReportIssue() {
     }, 800); // Debounce 800ms while typing
 
     return () => clearTimeout(timeoutId);
-  }, [address, area, coords]);
+  }, [address, area, coords, managers]);
 
   // Auto-assign manager: prioritize coordinates-based detection, fall back to text preview
   useEffect(() => {
-    // If coordinates are available, let backend determine manager from geolocation
-    // Otherwise use the text-based preview
     if (coords) {
-      // With coordinates, backend will do accurate geolocation
-      // Only set a preview manager if we have one from text, but note backend may override
       if (managerPreview) {
-        setAssignedManagerName(managerPreview.manager.name);
+        setAssignedManagerName(managerPreview.name);
       }
     } else if (managerPreview) {
-      // No coordinates: use text-based preview
-      setAssignedManagerName(managerPreview.manager.name);
+      setAssignedManagerName(managerPreview.name);
     }
   }, [managerPreview, coords]);
 
@@ -503,12 +533,14 @@ export default function ReportIssue() {
     if (fullSearch.length < 5) return;
 
     try {
+      // Use Nominatim (free, no API key required)
       const response = await fetch(
-        `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(fullSearch)}&key=AIzaSyAc0wUSsARYzaJZUWX15rgxtvTS0Wd8mMs`,
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(fullSearch + ", Delhi, India")}&limit=1`,
       );
       const data = await response.json();
-      if (data.status === "OK" && data.results.length > 0) {
-        const { lat, lng } = data.results[0].geometry.location;
+      if (data && data.length > 0) {
+        const lat = parseFloat(data[0].lat);
+        const lng = parseFloat(data[0].lon);
         setCoords({ lat, lng });
       }
     } catch (error) {
@@ -746,7 +778,7 @@ export default function ReportIssue() {
         // Only send frontend manager if NO coordinates available (backend has better geolocation from coords)
         assignedManagerName: finalCoords
           ? null
-          : assignedManagerName || managerPreview?.manager.name || null,
+          : assignedManagerName || managerPreview?.name || null,
         assignedManagerState: finalCoords
           ? null
           : managerPreview?.state || null,
@@ -758,7 +790,7 @@ export default function ReportIssue() {
       const mgr =
         typeof result === "object"
           ? (result as any).assignedManager
-          : assignedManagerName || managerPreview?.manager.name || "";
+          : assignedManagerName || managerPreview?.name || "";
       setComplaintId(newId);
       setAssignedManagerName(mgr);
       setStep(5);
@@ -1076,14 +1108,13 @@ export default function ReportIssue() {
                   Will be assigned to
                 </div>
                 <div className="mt-0.5 text-base font-bold text-slate-900">
-                  {managerPreview.manager.name}
+                  {managerPreview.name}
                 </div>
                 <div className="text-xs text-slate-500">
-                  {managerPreview.state} — one of{" "}
-                  {MANAGER_STATE_MAP.find(
-                    (g) => g.state === managerPreview.state,
-                  )?.managers.length ?? 1}{" "}
-                  managers handling this region
+                  {managerPreview.state}
+                  {managerPreview.zone ? ` · ${managerPreview.zone}` : ""}
+                  {" — "}
+                  {managers.filter((m) => m.state === managerPreview.state).length} manager(s) available
                 </div>
               </div>
             </div>

@@ -9,3 +9,6 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+venv/
+backend/seed_users.py
+backend/wipe_complaints.py

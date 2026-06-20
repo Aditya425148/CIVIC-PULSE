@@ -1,11 +1,12 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { motion } from "motion/react";
 import { MapPin, Users } from "lucide-react";
 import {
   DELHI_ZONE_CONFIG,
-  MOCK_ADMIN_MANAGERS,
+  fetchManagers,
   inferDelhiZone,
   type DelhiZoneId,
+  type AdminManager,
 } from "../../utils/adminInsights";
 
 /**
@@ -51,6 +52,11 @@ interface DelhiZoneMapProps {
 export default function DelhiZoneMap({ complaints }: DelhiZoneMapProps) {
   const [hoveredZone, setHoveredZone] = useState<DelhiZoneId | null>(null);
   const [selectedZone, setSelectedZone] = useState<DelhiZoneId | null>(null);
+  const [managers, setManagers] = useState<AdminManager[]>([]);
+
+  useEffect(() => {
+    fetchManagers().then(setManagers);
+  }, []);
 
   // Compute stats per zone from live complaints
   const zoneStats = useMemo(() => {
@@ -83,7 +89,7 @@ export default function DelhiZoneMap({ complaints }: DelhiZoneMapProps) {
     ? DELHI_ZONE_CONFIG.find((z) => z.id === activeZone)
     : null;
   const activeManagers = activeZone
-    ? MOCK_ADMIN_MANAGERS.filter((m) => {
+    ? managers.filter((m) => {
         const zoneConfig = DELHI_ZONE_CONFIG.find((z) => z.id === activeZone);
         return zoneConfig && m.zone === zoneConfig.name;
       })

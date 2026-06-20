@@ -23,7 +23,6 @@ import {
   Line,
   Cell,
 } from "recharts";
-import { mockAreaStats } from "../../data/mockData";
 
 type DelhiZoneId =
   | "south"

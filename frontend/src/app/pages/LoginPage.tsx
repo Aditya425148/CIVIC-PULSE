@@ -13,7 +13,6 @@ import {
 } from "lucide-react";
 import { authService } from "../appwriteService";
 import { getNetworkErrorMessage } from "../utils/connectionStatus";
-import { mockManagers, workerCredentials } from "../data/mockData";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -30,6 +29,63 @@ export default function LoginPage() {
 
   const [managerEmail, setManagerEmail] = useState("");
   const [managerPassword, setManagerPassword] = useState("");
+  const [devModeCount, setDevModeCount] = useState(0);
+
+  const handleDevAnonymousLogin = async () => {
+    try {
+      setError("");
+      setIsLoading(true);
+      await authService.loginAnonymous();
+      const { account } = await import("../appwrite");
+      const user = await account.get();
+      setError(`Logged in anonymously! ID: ${user.$id}. Now set a role.`);
+    } catch (err: any) {
+      console.error("Anonymous dev login failed:", err);
+      setError("Anonymous dev login failed: " + err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDevAssignRole = async (targetRole: string) => {
+    try {
+      setError("");
+      setIsLoading(true);
+      const { account } = await import("../appwrite");
+
+      let loggedInUser = null;
+      try {
+        loggedInUser = await account.get();
+      } catch {
+        await authService.loginAnonymous();
+        loggedInUser = await account.get();
+      }
+
+      await account.updatePrefs({
+        ...loggedInUser.prefs,
+        role: targetRole,
+      });
+
+      setError(`Role successfully set to ${targetRole}! Redirecting...`);
+
+      setTimeout(() => {
+        if (targetRole === "admin") {
+          navigate("/admin", { replace: true });
+        } else if (targetRole === "manager") {
+          navigate("/manager", { replace: true });
+        } else if (targetRole === "worker") {
+          navigate("/worker", { replace: true });
+        } else {
+          navigate("/dashboard", { replace: true });
+        }
+      }, 800);
+    } catch (err: any) {
+      console.error("Failed to assign role:", err);
+      setError("Failed to assign role: " + err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   // Form State
   const [email, setEmail] = useState("");
@@ -56,6 +112,13 @@ export default function LoginPage() {
     }
   };
 
+  /**
+   * Unified email login — role determined by Appwrite user prefs set by admin.
+   * prefs.role = "admin"   → /admin
+   * prefs.role = "manager" → /manager
+   * prefs.role = "worker"  → /worker
+   * (none / "citizen")     → /dashboard
+   */
   const handleEmailLogin = async () => {
     if (!email || !password) {
       setError("Please fill in all fields.");
@@ -66,110 +129,23 @@ export default function LoginPage() {
       setError("");
       setIsLoading(true);
 
-      // Check if this is a manager demo account FIRST (before official email check)
-      const manager = mockManagers.find(
-        (m) => m.email.toLowerCase() === email.toLowerCase(),
-      );
-
-      if (manager) {
-        // Mock manager login (using anonymous auth for backend connection)
-        // For demo purposes, we accept any password for these specific emails
-        await authService.loginAnonymous();
-        // Save the email override for ManagerLayout to pick up the correct name
-        localStorage.setItem("manager_email_override", email);
-        navigate(`/manager/${manager.id}`, { replace: true });
-        return;
-      }
-
-      // Check if this is a worker demo account BEFORE official email enforcement
-      console.log(
-        "Checking worker credentials. Total workers:",
-        workerCredentials.length,
-      );
-      console.log("Looking for email:", email.toLowerCase());
-      console.log(
-        "Available worker emails:",
-        workerCredentials.map((w) => w.email.toLowerCase()),
-      );
-
-      const worker = workerCredentials.find(
-        (w) => w.email.toLowerCase() === email.toLowerCase(),
-      );
-
-      console.log("Worker found:", !!worker);
-
-      if (worker) {
-        console.log("Worker found:", worker.name);
-        // Verify worker password
-        if (password !== worker.password) {
-          console.log(
-            "Password mismatch. Entered:",
-            password,
-            "Expected:",
-            worker.password,
-          );
-          setError("Invalid credentials for worker account.");
-          setIsLoading(false);
-          return;
-        }
-        // Mock worker login (using anonymous auth for backend connection)
-        console.log("Attempting anonymous login...");
-        try {
-          await authService.loginAnonymous();
-          console.log("Anonymous login successful");
-        } catch (anonErr: any) {
-          console.error("Anonymous login failed:", anonErr);
-          setError(
-            "Authentication failed: " + (anonErr.message || "Unknown error"),
-          );
-          setIsLoading(false);
-          return;
-        }
-        // Store worker info in session for later use
-        sessionStorage.setItem("workerData", JSON.stringify(worker));
-        console.log("Worker data stored in sessionStorage");
-        navigate("/worker", { replace: true });
-        return;
-      }
-
-      // --- Official Credentials Enforcement (after checking demo accounts) ---
-      const isOfficialAdmin =
-        email.toLowerCase().endsWith("@civicpulse.com") ||
-        email.toLowerCase() === "admin@civicpulse.com";
-
-      if (isOfficialAdmin && password !== "admin123456") {
-        setError("Invalid credentials for official account.");
-        setIsLoading(false);
-        return;
-      }
-
-      // Automatically handle official admin login for demo/dev purposes
-      if (isOfficialAdmin) {
-        try {
-          // Force set a local storage flag to bypass role check if Appwrite labels fail
-          localStorage.setItem("is_admin_bypass", "true");
-          // Try to login if account exists
-          await authService.loginWithEmail(email, password);
-        } catch (authErr: any) {
-          // If account doesn't exist (401/404), create it and then login
-          console.log("Admin account missing or login failed, falling back...");
-          try {
-            await authService.loginAnonymous();
-          } catch (anonErr) {
-            console.error("Auth fallback failed:", anonErr);
-          }
-        }
-        navigate("/admin", { replace: true });
-        return;
-      }
-
-      // Check if this is a regular user in Appwrite
       await authService.loginWithEmail(email, password);
-      // Redirect based on email
-      navigate("/dashboard", { replace: true });
+
+      // Read role from Appwrite user prefs
+      const { account } = await import("../appwrite");
+      const user = await account.get();
+      const role = user.prefs?.role as string | undefined;
+
+      if (role === "admin") {
+        navigate("/admin", { replace: true });
+      } else if (role === "manager") {
+        navigate("/manager", { replace: true });
+      } else if (role === "worker") {
+        navigate("/worker", { replace: true });
+      } else {
+        navigate("/dashboard", { replace: true });
+      }
     } catch (err: any) {
-      console.error("Login error:", err);
-      // Handle specific Appwrite error codes if needed
       if (err.code === 401) {
         setError("Invalid email or password. Please try again.");
       } else {
@@ -468,7 +444,14 @@ export default function LoginPage() {
         <div className="text-center mb-10">
           <div
             className="w-16 h-16 bg-sky-700 text-white rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-sky-900/20 cursor-pointer"
-            onClick={() => navigate("/")}
+            onClick={() => {
+              setDevModeCount((prev) => {
+                if (prev + 1 >= 5) {
+                  return 5;
+                }
+                return prev + 1;
+              });
+            }}
           >
             <Shield size={32} />
           </div>
@@ -646,6 +629,67 @@ export default function LoginPage() {
             </button>
           </p>
         </div>
+
+        {devModeCount >= 5 && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-6 p-4 rounded-2xl bg-amber-50/50 border border-amber-200/60 text-slate-800 text-xs space-y-3"
+          >
+            <div className="flex justify-between items-center">
+              <span className="font-[700] text-amber-800">Developer Control Panel</span>
+              <button
+                onClick={() => setDevModeCount(0)}
+                className="text-[10px] bg-amber-200/50 text-amber-800 px-2 py-0.5 rounded-full hover:bg-amber-200 transition-colors font-semibold"
+              >
+                Close
+              </button>
+            </div>
+
+            <p className="text-[10px] text-slate-500">
+              Quickly test the application by setting your local account role.
+            </p>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => handleDevAssignRole("admin")}
+                className="bg-sky-800 hover:bg-sky-950 text-white p-2.5 rounded-xl transition-all duration-200 font-semibold shadow-sm"
+              >
+                Set Admin Role
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDevAssignRole("manager")}
+                className="bg-amber-600 hover:bg-amber-700 text-white p-2.5 rounded-xl transition-all duration-200 font-semibold shadow-sm"
+              >
+                Set Manager Role
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDevAssignRole("worker")}
+                className="bg-emerald-700 hover:bg-emerald-800 text-white p-2.5 rounded-xl transition-all duration-200 font-semibold shadow-sm"
+              >
+                Set Worker Role
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDevAssignRole("citizen")}
+                className="bg-slate-700 hover:bg-slate-800 text-white p-2.5 rounded-xl transition-all duration-200 font-semibold shadow-sm"
+              >
+                Set Citizen Role
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleDevAnonymousLogin}
+              className="w-full bg-white border border-slate-200 text-slate-700 p-2.5 rounded-xl hover:bg-slate-50 transition-colors font-semibold flex items-center justify-center gap-1.5"
+            >
+              <span>⚡</span> Quick Anonymous Login
+            </button>
+          </motion.div>
+        )}
       </motion.div>
     </div>
   );

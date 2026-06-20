@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { useParams, useNavigate } from "react-router";
+import { useNavigate } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Phone,
@@ -28,11 +28,8 @@ import {
   Legend,
 } from "recharts";
 import {
-  mockWorkers,
-  mockManagers,
   Complaint,
   Worker,
-  Manager,
 } from "../../data/mockData";
 import { appwriteService } from "../../appwriteService";
 import { account } from "../../appwrite";
@@ -40,45 +37,29 @@ import { api } from "../../api";
 import { toast } from "sonner";
 
 export default function ManagerOverview() {
-  const { managerId } = useParams();
   const navigate = useNavigate();
   const [manager, setManager] = useState<any>(null);
+  const [workers, setWorkers] = useState<Worker[]>([]);
 
   useEffect(() => {
     // Attempt to get the logged-in user from Appwrite
     account
       .get()
       .then((user) => {
-        // Find the mock config for this logged in user or use defaults
-        const mockConfig =
-          mockManagers.find((m: Manager) => m.email === user.email) ||
-          (managerId ? mockManagers.find((m) => m.id === managerId) : null) ||
-          mockManagers[0];
         setManager({
           ...user,
-          // Use the mock manager ID (e.g. MGR-DEL-01) for complaint filtering
-          id: mockConfig.id,
-          name: user.name || mockConfig.name,
-          email: user.email || mockConfig.email,
-          phone: user.phone || mockConfig.phone,
-          managedState: mockConfig.managedState,
-          managedAreas: mockConfig.managedAreas,
+          id: user.$id,
+          name: user.name || "Manager",
+          email: user.email,
+          phone: user.prefs?.phone || user.phone || "N/A",
+          managedState: user.prefs?.state || "Delhi",
+          managedAreas: user.prefs?.zone ? [user.prefs.zone] : ["central_new"],
         });
       })
       .catch(() => {
-        // Fallback: If no session exists, use the ID from URL or first manager
-        if (!managerId) {
-          navigate("/login", { replace: true });
-          return;
-        }
-        const fallback = mockManagers.find((m) => m.id === managerId);
-        if (!fallback) {
-          navigate("/login", { replace: true });
-          return;
-        }
-        setManager(fallback);
+        navigate("/login", { replace: true });
       });
-  }, [managerId, navigate]);
+  }, [navigate]);
 
   const [complaints, setComplaints] = useState<Complaint[]>([]);
   const [selectedComplaint, setSelectedComplaint] = useState<Complaint | null>(
@@ -97,22 +78,21 @@ export default function ManagerOverview() {
 
   useEffect(() => {
     if (!manager) return;
+
     // Fetch live complaints assigned to this manager from the backend
     api
       .get<Complaint[]>(`/api/complaints?managerId=${manager.id}`)
       .then((data) => setComplaints(data))
-      .catch(() => {
-        // Fallback: filter from all complaints by assignedManagerId
-        api
-          .get<Complaint[]>("/api/complaints")
-          .then((data) =>
-            setComplaints(
-              (data as any[]).filter(
-                (c: any) => c.assignedManagerId === manager.id,
-              ) as Complaint[],
-            ),
-          )
-          .catch(console.error);
+      .catch((err) => {
+        console.error("Failed to load manager complaints:", err);
+      });
+
+    // Fetch workers
+    api
+      .get<Worker[]>("/api/workers")
+      .then((data) => setWorkers(data))
+      .catch((err) => {
+        console.error("Failed to load workers:", err);
       });
   }, [manager]);
 
@@ -141,9 +121,9 @@ export default function ManagerOverview() {
   const stateWorkers = useMemo(
     () =>
       manager
-        ? mockWorkers.filter((w: Worker) => w.state === manager.managedState)
+        ? workers.filter((w: Worker) => w.state === manager.managedState)
         : [],
-    [manager],
+    [manager, workers],
   );
 
   // Auto-assignment logic - smart worker selection
@@ -578,16 +558,30 @@ export default function ManagerOverview() {
                   <p className="text-xs text-slate-600 line-clamp-2 mb-3">
                     {complaint.description}
                   </p>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setSelectedReview(complaint);
-                      setShowReviewModal(true);
-                    }}
-                    className="w-full py-2 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-lg transition"
-                  >
-                    Review Resolution
-                  </button>
+                  <div className="flex gap-2 mt-3">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedReview(complaint);
+                        setReviewAction(null);
+                        setShowReviewModal(true);
+                      }}
+                      className="flex-1 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg transition"
+                    >
+                      Review Details
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedReview(complaint);
+                        setReviewAction("approve");
+                        setShowReviewModal(true);
+                      }}
+                      className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition flex items-center justify-center gap-1 shadow-md shadow-emerald-600/10"
+                    >
+                      <Check size={14} /> Mark as Complete
+                    </button>
+                  </div>
                 </motion.div>
               ))}
           </div>
@@ -692,9 +686,42 @@ export default function ManagerOverview() {
                         Dispatch Help <ChevronRight size={14} />
                       </button>
                     ) : (
-                      <div className="flex items-center gap-2 text-xs font-bold text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-xl">
-                        <Check size={14} />
-                        <span>{complaint.assignedTo}</span>
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 text-xs font-bold text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-xl">
+                          <Check size={14} />
+                          <span>{complaint.assignedTo}</span>
+                        </div>
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            try {
+                              await api.patch(`/api/complaints/${complaint.id}/status`, {
+                                status: "Resolved",
+                                note: "Marked as complete by manager",
+                                actor: manager?.name || "Manager",
+                              });
+                              setComplaints((prev) =>
+                                prev.map((c) =>
+                                  c.id === complaint.id
+                                    ? { ...c, status: "Resolved" }
+                                    : c
+                                )
+                              );
+                              if (selectedComplaint?.id === complaint.id) {
+                                setSelectedComplaint((prev) =>
+                                  prev ? { ...prev, status: "Resolved" } : null
+                                );
+                              }
+                              toast.success("Complaint marked as completed! ✓");
+                            } catch (err) {
+                              toast.error("Failed to update status");
+                            }
+                          }}
+                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold rounded-xl flex items-center gap-1 transition-all shadow-md shadow-emerald-600/10"
+                          title="Mark as Complete"
+                        >
+                          <CheckCircle size={12} /> Complete
+                        </button>
                       </div>
                     )}
                   </div>
@@ -750,10 +777,52 @@ export default function ManagerOverview() {
                 </div>
 
                 <div className="space-y-3 pt-4">
-                  <button className="w-full flex items-center justify-center gap-3 rounded-2xl bg-slate-900 py-4 text-sm font-black text-white transition hover:bg-black shadow-xl shadow-slate-900/20 group">
-                    <Phone size={18} className="group-hover:shake" /> Contact
-                    Citizen
-                  </button>
+                  {selectedComplaint.reporterPhone ? (
+                    <a
+                      href={`tel:${selectedComplaint.reporterPhone}`}
+                      className="w-full flex items-center justify-center gap-3 rounded-2xl bg-slate-900 py-4 text-sm font-black text-white transition hover:bg-black shadow-xl shadow-slate-900/20 group text-center"
+                    >
+                      <Phone size={18} className="group-hover:shake text-sky-400" /> Dial: {selectedComplaint.reporterPhone}
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled
+                      className="w-full flex items-center justify-center gap-3 rounded-2xl bg-slate-100 py-4 text-sm font-black text-slate-400 cursor-not-allowed border border-slate-200"
+                    >
+                      <Phone size={18} /> Dial: Not Provided
+                    </button>
+                  )}
+
+                  {!["Resolved", "Closed", "Rejected"].includes(selectedComplaint.status) && (
+                    <button
+                      onClick={async () => {
+                        try {
+                          await api.patch(`/api/complaints/${selectedComplaint.id}/status`, {
+                            status: "Resolved",
+                            note: "Marked as complete by manager",
+                            actor: manager?.name || "Manager",
+                          });
+                          setComplaints((prev) =>
+                            prev.map((c) =>
+                              c.id === selectedComplaint.id
+                                ? { ...c, status: "Resolved" }
+                                : c
+                            )
+                          );
+                          setSelectedComplaint((prev) =>
+                            prev ? { ...prev, status: "Resolved" } : null
+                          );
+                          toast.success("Complaint marked as completed! ✓");
+                        } catch (err) {
+                          toast.error("Failed to update status");
+                        }
+                      }}
+                      className="w-full flex items-center justify-center gap-3 rounded-2xl bg-emerald-600 hover:bg-emerald-700 py-4 text-sm font-black text-white transition shadow-xl shadow-emerald-600/20 mt-2"
+                    >
+                      <CheckCircle size={18} /> Mark as Complete
+                    </button>
+                  )}
                 </div>
               </div>
             </motion.div>
@@ -901,9 +970,9 @@ export default function ManagerOverview() {
                 <div className="space-y-3">
                   <button
                     onClick={() => setReviewAction("approve")}
-                    className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition flex items-center justify-center gap-2"
+                    className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20"
                   >
-                    <Check size={18} /> Approve Work
+                    <Check size={18} /> Mark as Complete
                   </button>
                   <button
                     onClick={() => setReviewAction("reject")}
@@ -926,7 +995,7 @@ export default function ManagerOverview() {
                   <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
                     <p className="text-sm text-blue-900">
                       {reviewAction === "approve"
-                        ? "✓ Approving this work will mark it as resolved. The citizen can then submit feedback."
+                        ? "✓ Marking this work as complete will resolve the complaint. The citizen can then submit feedback."
                         : "✓ Rejecting this work will mark it as rejected. The assigned worker will be notified."}
                     </p>
                   </div>
@@ -940,7 +1009,7 @@ export default function ManagerOverview() {
                   >
                     <Check size={18} />
                     {reviewAction === "approve"
-                      ? "Confirm Approval"
+                      ? "Confirm Completion"
                       : "Confirm Rejection"}
                   </button>
                   <button
