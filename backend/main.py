@@ -14,6 +14,9 @@ import threading
 from cron_job import setup_cron
 from config import BACKEND_URL
 
+# ── API Keys ─────────────────────────────────────────────────────────────────
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
+
 app = FastAPI(title="CivicPulse Backend", version="1.0.0")
 
 # ── Keep-Alive for Render free tier ──────────────────────────────────────────
