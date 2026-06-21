@@ -12,3 +12,4 @@ htmlcov/
 venv/
 backend/seed_users.py
 backend/wipe_complaints.py
+frontend/dist

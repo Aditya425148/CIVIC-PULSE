@@ -105,7 +105,7 @@ export default function CitizenHome() {
           appwriteService
             .getComplaintsByUser(userData.uid)
             .then((data) => setUserComplaints(data))
-            .catch(() => {});
+            .catch(() => { });
         };
 
         fetchAll();

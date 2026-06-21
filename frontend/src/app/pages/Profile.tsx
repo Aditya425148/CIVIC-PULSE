@@ -214,7 +214,7 @@ export default function Profile() {
     } catch (_) {
       try {
         await account.deleteSession("current");
-      } catch (_) {}
+      } catch (_) { }
     }
     navigate("/login");
   };
@@ -872,14 +872,13 @@ export default function Profile() {
                       Status
                     </div>
                     <div
-                      className={`text-4xl font-black uppercase tracking-tight mt-1 ${
-                        ["Resolved", "Closed"].includes(
-                          complaints.find((c) => c.$id === isGenerating)
-                            ?.status,
-                        )
+                      className={`text-4xl font-black uppercase tracking-tight mt-1 ${["Resolved", "Closed"].includes(
+                        complaints.find((c) => c.$id === isGenerating)
+                          ?.status,
+                      )
                           ? "text-emerald-600"
                           : "text-orange-500"
-                      }`}
+                        }`}
                     >
                       {complaints.find((c) => c.$id === isGenerating)?.status ||
                         "VALIDATED"}
