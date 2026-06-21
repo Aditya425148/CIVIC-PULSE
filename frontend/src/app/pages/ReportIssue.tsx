@@ -79,7 +79,7 @@ const subcategories: Record<string, string[]> = {
   Other: ["Noise", "Animal Menace", "Illegal Parking", "General", "Other"],
 };
 
-type Step = 1 | 2 | 3 | 4 | 5;
+type Step = 1 | 2 | 3 | 4;
 
 // Manager preview is now derived from real managers fetched from the API using zone logic
 function getManagerPreview(
@@ -191,7 +191,7 @@ export default function ReportIssue() {
     [address, area, coords, managers],
   );
 
-  const steps = ["Category", "Location", "Details", "Photos", "Done"];
+  const steps = ["Details", "Location", "Photos", "Done"];
   const mapRef = useRef<any>(null);
   const mapInstanceRef = useRef<any>(null);
 
@@ -764,8 +764,8 @@ export default function ReportIssue() {
       }
 
       const payload = {
-        category: selectedCategory || "Other",
-        subcategory: selectedSubcategory || "",
+        category: "Other",
+        subcategory: "",
         description: description.trim() || "No description provided",
         address: `${address}${area ? `, ${area}` : ""}${pincode ? ` - ${pincode}` : ""}`,
         coordinates: finalCoords
@@ -785,15 +785,19 @@ export default function ReportIssue() {
       };
 
       const result = await appwriteService.createComplaint(payload as any);
-      // result may be a string (id) or object {id, assignedManager}
+      // result may be a string (id) or object {id, assignedManager, category, subcategory}
       const newId = typeof result === "string" ? result : (result as any).id;
       const mgr =
         typeof result === "object"
           ? (result as any).assignedManager
           : assignedManagerName || managerPreview?.name || "";
+      const cat = typeof result === "object" ? (result as any).category : null;
+      const sub = typeof result === "object" ? (result as any).subcategory : null;
       setComplaintId(newId);
       setAssignedManagerName(mgr);
-      setStep(5);
+      if (cat) setSelectedCategory(cat);
+      if (sub) setSelectedSubcategory(sub);
+      setStep(4);
       toast.success("Complaint submitted successfully.");
 
       // Post-submission: Generate and upload the CivicPulse Report Card
@@ -900,76 +904,42 @@ export default function ReportIssue() {
       {step === 1 && (
         <section className="rounded-[24px] border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold text-slate-900">
-            Choose category
+            Describe the issue
           </h2>
           <p className="mt-1 text-sm text-slate-500">
-            Pick the issue type first so the complaint goes to the right team.
+            Keep it short and practical. Mention what is happening and why it
+            matters.
           </p>
 
-          <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {categories.map(({ id, icon: Icon, description }) => (
-              <button
-                key={id}
-                onClick={() => {
-                  setSelectedCategory(id);
-                  setSelectedSubcategory(null);
-                }}
-                className={`group rounded-3xl border p-5 text-left transition-all duration-300 ${
-                  selectedCategory === id
-                    ? "border-sky-400 bg-sky-200 text-sky-950 shadow-md ring-4 ring-sky-500/10"
-                    : "border-slate-100 bg-white hover:border-sky-200 hover:bg-sky-50/50 hover:shadow-lg"
-                }`}
-              >
-                <div
-                  className={`mb-4 inline-flex rounded-2xl p-2.5 transition-colors ${
-                    selectedCategory === id
-                      ? "bg-sky-600 text-white"
-                      : "bg-sky-50 text-sky-700 group-hover:bg-white group-hover:shadow-sm"
-                  }`}
-                >
-                  <Icon className="h-6 w-6" />
-                </div>
-                <div
-                  className={`text-base font-bold tracking-tight ${selectedCategory === id ? "text-sky-950" : "text-slate-900"}`}
-                >
-                  {id}
-                </div>
-                <div
-                  className={`mt-1.5 text-sm leading-relaxed ${selectedCategory === id ? "text-sky-800" : "text-slate-500"}`}
-                >
-                  {description}
-                </div>
-              </button>
-            ))}
+          <textarea
+            value={description}
+            onChange={(event) =>
+              setDescription(event.target.value.slice(0, 500))
+            }
+            rows={4}
+            className="mt-6 w-full rounded-3xl border border-slate-200 px-4 py-4 text-sm text-slate-900 outline-none transition focus:border-sky-400"
+            placeholder="Example: There is a large pothole near the main gate of the school. It is causing traffic and is dangerous for bikes."
+          />
+
+          <div className="mt-2 text-right text-xs text-slate-400">
+            {description.length} / 500
           </div>
 
-          {selectedCategory && (
-            <div className="mt-6">
-              <h3 className="text-sm font-medium text-slate-700">
-                Choose subcategory
-              </h3>
-              <div className="mt-3 flex flex-wrap gap-2.5">
-                {(subcategories[selectedCategory] || []).map((sub) => (
-                  <button
-                    key={sub}
-                    onClick={() => setSelectedSubcategory(sub)}
-                    className={`rounded-2xl px-5 py-3 text-sm font-bold transition-all duration-300 ${
-                      selectedSubcategory === sub
-                        ? "bg-sky-600 text-white shadow-md ring-4 ring-sky-600/10"
-                        : "bg-white border border-slate-200 text-slate-600 hover:border-sky-300 hover:bg-sky-50"
-                    }`}
-                  >
-                    {sub}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+          <div className="mt-6 rounded-2xl bg-sky-50 p-4 text-sm text-slate-600">
+            Your report details are used only to process and route the issue.
+          </div>
 
-          <div className="mt-8 flex justify-end">
+          <div className="mt-8 flex items-center justify-between">
+            <button
+              onClick={() => navigate("/dashboard")}
+              className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-sky-700"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Cancel
+            </button>
             <button
               onClick={() => setStep(2)}
-              disabled={!selectedCategory || !selectedSubcategory}
+              disabled={!description.trim()}
               className="inline-flex items-center gap-2 rounded-full bg-sky-700 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
             >
               Continue
@@ -1145,53 +1115,6 @@ export default function ReportIssue() {
 
       {step === 3 && (
         <section className="rounded-[24px] border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold text-slate-900">
-            Describe the issue
-          </h2>
-          <p className="mt-1 text-sm text-slate-500">
-            Keep it short and practical. Mention what is happening and why it
-            matters.
-          </p>
-
-          <textarea
-            value={description}
-            onChange={(event) =>
-              setDescription(event.target.value.slice(0, 500))
-            }
-            rows={4}
-            className="mt-6 w-full rounded-3xl border border-slate-200 px-4 py-4 text-sm text-slate-900 outline-none transition focus:border-sky-400"
-            placeholder="Example: There is a large pothole near the main gate of the school. It is causing traffic and is dangerous for bikes."
-          />
-
-          <div className="mt-2 text-right text-xs text-slate-400">
-            {description.length} / 500
-          </div>
-
-          <div className="mt-6 rounded-2xl bg-sky-50 p-4 text-sm text-slate-600">
-            Your report details are used only to process and route the issue.
-          </div>
-
-          <div className="mt-8 flex items-center justify-between">
-            <button
-              onClick={() => setStep(2)}
-              className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-sky-700"
-            >
-              <ArrowLeft className="h-4 w-4" />
-              Back
-            </button>
-            <button
-              onClick={() => setStep(4)}
-              className="inline-flex items-center gap-2 rounded-full bg-sky-700 px-5 py-3 text-sm font-semibold text-white"
-            >
-              Continue
-              <ArrowRight className="h-4 w-4" />
-            </button>
-          </div>
-        </section>
-      )}
-
-      {step === 4 && (
-        <section className="rounded-[24px] border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold text-slate-900">Add photos</h2>
           <p className="mt-1 text-sm text-slate-500">
             Photos are optional, but they help verify the issue quickly.
@@ -1264,7 +1187,7 @@ export default function ReportIssue() {
 
           <div className="mt-8 flex items-center justify-between">
             <button
-              onClick={() => setStep(3)}
+              onClick={() => setStep(2)}
               className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-sky-700"
             >
               <ArrowLeft className="h-4 w-4" />
@@ -1282,7 +1205,7 @@ export default function ReportIssue() {
         </section>
       )}
 
-      {step === 5 && (
+      {step === 4 && (
         <section className="rounded-[24px] border border-slate-200 bg-white p-8 text-center shadow-sm">
           <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
             <CheckCircle2 className="h-8 w-8" />

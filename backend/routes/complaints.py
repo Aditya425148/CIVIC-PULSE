@@ -1,5 +1,62 @@
 import json
 import math
+import os
+import httpx
+from datetime import datetime, UTC
+
+async def classify_complaint_with_groq(description: str) -> tuple[str, str]:
+    """
+    Calls Groq API to classify the complaint description.
+    Returns a tuple of (category, subcategory).
+    """
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        print("[Groq] No GROQ_API_KEY found, falling back to 'Other'.")
+        return "Other", ""
+
+    prompt = (
+        "You are an AI assistant for CivicPulse, a citizen complaint portal. "
+        "Analyze the following complaint description and classify it.\n"
+        "Categories must be exactly one of: 'Safety', 'Water', 'Garbage', 'Sanitation', "
+        "'Streetlight', 'Pothole', 'Construction', 'Other', or 'Spam' (if it is promotional, "
+        "irrelevant, offensive, gibberish, nonsense, or spam).\n"
+        "Also provide a short suitable subcategory (e.g., 'Illegal Dumping' for Garbage, "
+        "'Supply Failure' for Water, 'Road' for Pothole, or 'Spam' for Spam).\n"
+        "Return your response ONLY as a JSON object with keys 'category' and 'subcategory'."
+    )
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": description},
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0.0,
+                },
+                timeout=10.0,
+            )
+            response.raise_for_status()
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            result = json.loads(content)
+            cat = result.get("category", "Other").strip()
+            sub = result.get("subcategory", "").strip()
+            # Normalize category
+            valid_categories = {"Safety", "Water", "Garbage", "Sanitation", "Streetlight", "Pothole", "Construction", "Other", "Spam"}
+            matched_cat = next((vc for vc in valid_categories if vc.lower() == cat.lower()), "Other")
+            return matched_cat, sub
+    except Exception as e:
+        print(f"[Groq] Error during classification: {e}")
+        return "Other", ""
 from datetime import datetime, UTC
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query as FastAPIQuery
@@ -227,7 +284,7 @@ def _map_doc(doc: dict) -> dict:
 # ── Pydantic models ─────────────────────────────────────────────────────────
 
 class ComplaintCreate(BaseModel):
-    category: str
+    category: Optional[str] = None
     subcategory: Optional[str] = ""
     description: Optional[str] = ""
     address: Optional[str] = ""
@@ -304,15 +361,18 @@ async def get_managers():
 async def create_complaint(body: ComplaintCreate):
     try:
         now = datetime.now(UTC).isoformat()
-        sla_hours = get_sla_hours(body.category)
-        priority = calculate_priority(body.category)
-        timeline = json.dumps([{
-            "status": "Submitted",
-            "timestamp": now,
-            "note": "Complaint submitted successfully",
-            "actor": "Citizen",
-        }])
-
+        
+        # Determine category and subcategory using Groq
+        category = body.category
+        subcategory = body.subcategory or ""
+        
+        if not category or category == "Other":
+            desc = body.description or ""
+            if desc.strip():
+                category, subcategory = await classify_complaint_with_groq(desc)
+            else:
+                category = "Other"
+        
         # Resolve state
         state = "Unknown"
         if body.coordinates:
@@ -322,33 +382,60 @@ async def create_complaint(body: ComplaintCreate):
         if state == "Unknown" and body.address:
             state = get_state_from_address_text(body.address)
 
-        # Assign manager
-        if body.assignedManagerName and body.assignedManagerState:
-            all_managers = _fetch_managers_from_appwrite()
-            found_mgr = next(
-                (m for m in all_managers if m["name"] == body.assignedManagerName), None
-            )
-            if found_mgr:
-                assigned_manager = found_mgr
-            else:
-                # Manager name provided but not found in Appwrite; create a stub
-                assigned_manager = {
-                    "id": f"MGR-{body.assignedManagerState[:3].upper()}",
-                    "name": body.assignedManagerName,
-                }
+        # Set status, timeline, priority, SLA and manager based on category
+        if category == "Spam":
+            status = "Closed"
+            priority = 0.0
+            sla_hours = 0
+            assigned_manager = {"id": "SYSTEM", "name": "SystemAdmin"}
+            timeline = json.dumps([{
+                "status": "Closed",
+                "timestamp": now,
+                "note": "Complaint flagged as spam by automated AI review",
+                "actor": "System",
+            }])
         else:
-            coords_dict = body.coordinates if body.coordinates else None
-            assigned_manager = assign_manager_to_complaint(
-                state, body.address or "", coords_dict
-            )
+            status = "Submitted"
+            sla_hours = get_sla_hours(category)
+            priority = calculate_priority(category)
+            timeline = json.dumps([{
+                "status": "Submitted",
+                "timestamp": now,
+                "note": "Complaint submitted successfully",
+                "actor": "Citizen",
+            }])
+
+            # Assign manager
+            if body.assignedManagerName and body.assignedManagerState:
+                all_managers = _fetch_managers_from_appwrite()
+                found_mgr = next(
+                    (m for m in all_managers if m["name"] == body.assignedManagerName), None
+                )
+                if found_mgr:
+                    assigned_manager = found_mgr
+                else:
+                    # Manager name provided but not found in Appwrite; create a stub
+                    assigned_manager = {
+                        "id": f"MGR-{body.assignedManagerState[:3].upper()}",
+                        "name": body.assignedManagerName,
+                    }
+            else:
+                coords_dict = body.coordinates if body.coordinates else None
+                assigned_manager = assign_manager_to_complaint(
+                    state, body.address or "", coords_dict
+                )
 
         payload_dict = body.model_dump()
         payload_dict.pop("assignedManagerName", None)
         payload_dict.pop("assignedManagerState", None)
+        payload_dict.pop("category", None)
+        payload_dict.pop("subcategory", None)
 
         payload = {
             **payload_dict,
-            "status": "Submitted",
+            "category": category,
+            "subcategory": subcategory,
+            "status": status,
             "createdAt": now,
             "updatedAt": now,
             "timeline": timeline,
@@ -362,7 +449,12 @@ async def create_complaint(body: ComplaintCreate):
             "assignedManagerName": assigned_manager["name"],
         }
         doc = databases.create_document(DATABASE_ID, COLLECTION_ID, "unique()", payload)
-        return {"id": doc["$id"], "assignedManager": assigned_manager["name"]}
+        return {
+            "id": doc["$id"],
+            "assignedManager": assigned_manager["name"],
+            "category": category,
+            "subcategory": subcategory,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -72,12 +72,12 @@ export const authService = {
 // ── Complaint Service (calls FastAPI backend) ──────────────────────────────────
 
 export const appwriteService = {
-  async createComplaint(complaintData: Record<string, any>): Promise<string> {
-    const result = await api.post<{ id: string }>(
+  async createComplaint(complaintData: Record<string, any>): Promise<any> {
+    const result = await api.post<any>(
       "/api/complaints",
       complaintData,
     );
-    return result.id;
+    return result;
   },
 
   async getAllComplaints(
